@@ -117,7 +117,7 @@ def calculate_verihouse_score(permits):
 # --- REPORT DISPLAY ---
 if run_btn:
     with st.spinner(f"Verifying records for {street_num} {street_name}..."):
-        url = "https://data.sfgov.org/resource/p4e4-a5a7.json"
+        url = "https://data.sfgov.org/resource/i98e-djp9.json"
         params = {"street_number": street_num, "street_name": street_name.upper(), "$limit": 50, "$order": "permit_creation_date DESC"}
         
         try:
@@ -179,4 +179,5 @@ if run_btn:
                 st.write("") # small gap
 
         except Exception as e:
+
             st.error(f"Connection Error: {e}")
