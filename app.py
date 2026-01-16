@@ -90,9 +90,12 @@ def calculate_verihouse_score(permits):
 # --- REPORT DISPLAY ---
 if run_btn:
     with st.spinner(f"Verifying records for {street_num} {street_name}..."):
-        # UPDATED DATABASE LINK (2025 Active DB)
+        # UPDATED TO 'FUZZY SEARCH' MODE
         url = "https://data.sfgov.org/resource/i98e-djp9.json"
-        params = {"street_number": street_num, "street_name": street_name.upper(), "$limit": 50, "$order": "permit_creation_date DESC"}
+        
+        # This query says: "Find where Street Number is X, and Street Name STARTS WITH Y"
+        query_string = f"street_number = '{street_num}' AND street_name like '{street_name.upper()}%'"
+        params = {'$where': query_string, "$limit": 50, "$order": "permit_creation_date DESC"}
         
         try:
             r = requests.get(url, params=params)
@@ -100,9 +103,9 @@ if run_btn:
             
             # --- DEBUGGER (Visible only if results are 0) ---
             if len(data) == 0:
-                st.error(f"DEBUG: Connected to API (i98e-djp9), but found 0 records.")
-                st.code(f"Search Query Sent: Number='{street_num}', Name='{street_name.upper()}'")
-                st.info("Tip: Try removing suffixes like 'Street' or 'Ave'.")
+                st.error(f"DEBUG: Connected to SF Database, but found 0 records.")
+                st.info(f"Tried searching for: Street Number '{street_num}' AND Street Name starting with '{street_name.upper()}'")
+                st.caption("Possible Issue: This property might be in the Historical Database (Pre-2013) only.")
             
             final_score, notes = calculate_verihouse_score(data)
             
