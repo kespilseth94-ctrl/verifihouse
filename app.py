@@ -1,72 +1,109 @@
 import streamlit as st
 import requests
+import datetime
 
-st.set_page_config(page_title="VeriHouse", page_icon="🛡️")
-st.title("🛡️ VeriHouse Property Audit")
-st.markdown("Coverage: San Francisco, CA")
+# --- 1. PAGE CONFIGURATION ---
+st.set_page_config(
+    page_title="VeriHouse | Certified Asset History", 
+    page_icon="🛡️", 
+    layout="wide"
+)
 
-# --- INPUTS ---
-col1, col2 = st.columns(2)
-st_num = col1.text_input("Street Number", value="301")
-st_name = col2.text_input("Street Name", value="Mission") 
-run_btn = st.button("Verify Property", type="primary")
+# --- 2. CUSTOM STYLING ---
+st.markdown("""
+    <style>
+    .main-header { font-family: 'Helvetica Neue', sans-serif; color: #2C3E50; }
+    .score-card { 
+        padding: 20px; 
+        border-radius: 10px; 
+        background-color: #f8f9fa; 
+        border: 1px solid #e9ecef;
+        text-align: center;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    }
+    .metric-value { font-size: 2.2em; font-weight: 800; color: #2C3E50; }
+    .metric-label { font-size: 0.85em; color: #6c757d; text-transform: uppercase; letter-spacing: 1px; }
+    .badge-risk { background-color: #fee2e2; color: #991b1b; padding: 4px 10px; border-radius: 15px; font-size: 0.8em; font-weight: bold; }
+    .badge-safe { background-color: #d1fae5; color: #065f46; padding: 4px 10px; border-radius: 15px; font-size: 0.8em; font-weight: bold; }
+    </style>
+""", unsafe_allow_html=True)
 
-# --- ENGINE ---
-if run_btn:
-    with st.spinner("Searching City Database..."):
-        url = "https://data.sfgov.org/resource/i98e-djp9.json"
+# --- 3. SIDEBAR ---
+with st.sidebar:
+    st.title("🛡️ VeriHouse")
+    st.markdown("**Residential Risk Intelligence**")
+    st.divider()
+    st.info("System Status: Online 🟢")
+    st.caption("Database: SF Active Permits (i98e)")
+    st.divider()
+    st.warning("Disclaimer: Not a substitute for professional inspection.")
+
+# --- 4. MAIN INTERFACE ---
+st.markdown("<h1 style='text-align: center;'>VeriHouse Property Audit</h1>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: #666;'>AI-Powered Permit Analysis & Risk Scoring</p>", unsafe_allow_html=True)
+st.write("")
+
+col1, col2, col3 = st.columns([1, 2, 1])
+with col2:
+    with st.container():
+        c1, c2 = st.columns(2)
+        st_num = c1.text_input("Street Number", value="301")
+        st_name = c2.text_input("Street Name", value="Mission") 
+        run_btn = st.button("Generate Risk Report", type="primary", use_container_width=True)
+
+# --- 5. THE FORENSIC ENGINE ---
+def analyze_risks(permits):
+    score = 100
+    findings = []
+    
+    # --- DEEP SEARCH DICTIONARY ---
+    risk_map = [
+        # 1. ELECTRICAL HAZARDS
+        {"keywords": ["KNOB", "TUBE"], "deduction": 25, "msg": "Major Electrical Risk: Knob & Tube Wiring detected.", "cat": "fire"},
+        {"keywords": ["ALUMINUM WIRING"], "deduction": 15, "msg": "Fire Risk: Aluminum branch wiring detected.", "cat": "fire"},
+        {"keywords": ["UNPERMITTED", "ILLEGAL WIRING", "WORK WITHOUT PERMIT"], "deduction": 20, "msg": "Compliance Risk: History of unpermitted electrical work.", "cat": "legal"},
+
+        # 2. STRUCTURAL FAILURE (The "Big Ticket" Items)
+        {"keywords": ["UNDERPIN", "SHORING", "FOUNDATION REPAIR", "SETTLEMENT"], "deduction": 30, "msg": "Major Structural Risk: Foundation movement/repair detected.", "cat": "structure"},
+        {"keywords": ["SISTERING", "JOIST REPAIR", "DRY ROT", "TERMITE"], "deduction": 15, "msg": "Structural Decay: Frame damage (rot/termites) noted.", "cat": "structure"},
+        {"keywords": ["SHEAR WALL", "SOFT STORY"], "deduction": 5, "msg": "Seismic Note: Soft-story retrofit (Safety upgrade, but indicates older structure).", "cat": "structure"},
+
+        # 3. FIRE & BURNING (Forensic Keywords)
+        {"keywords": ["FIRE DAMAGE", "FIRE REPAIR", "CHARRED", "SCORCH", "BURNING", "SMOKE DAMAGE"], "deduction": 30, "msg": "Structural Risk: Evidence of past fire/burning.", "cat": "fire"},
+
+        # 4. WATER & TOXICITY (The "Health" Risks)
+        {"keywords": ["WATER DAMAGE", "LEAK", "MOLD", "FUNGAL", "MICROBIAL"], "deduction": 20, "msg": "Health Risk: History of water intrusion or mold.", "cat": "water"},
+        {"keywords": ["REMEDIATION", "ABATEMENT", "ASBESTOS", "LEAD PAINT"], "deduction": 10, "msg": "Toxic Material: History of hazmat remediation.", "cat": "health"},
+
+        # 5. LEGAL & ZONING (The "Red Tape" Risks)
+        {"keywords": ["NOV ", "NOTICE OF VIOLATION", "ORDER OF ABATEMENT", "STOP WORK"], "deduction": 25, "msg": "Legal Risk: Property has received City Violations/Stop Work Orders.", "cat": "legal"},
+        {"keywords": ["ILLEGAL UNIT", "UNAUTHORIZED DWELLING", "LEGALIZATION"], "deduction": 15, "msg": "Zoning Risk: History of illegal/unauthorized units.", "cat": "legal"},
         
-        # 1. CAPITALIZATION FIX (The Secret Sauce)
-        # The city uses "Mission", not "MISSION" or "mission"
-        clean_name = st_name.strip().title() 
-        clean_num = st_num.strip()
+        # 6. SOLAR (Financial Encumbrances)
+        {"keywords": ["SOLAR", "LEASE", "PPA", "SUNRUN", "TESLA"], "match_all": True, "deduction": 15, "msg": "Financial Encumbrance: Solar Lease detected.", "cat": "finance"},
+    ]
+    
+    # ASSET DICTIONARY
+    assets = [
+        {"keywords": ["REROOF", "RE-ROOF", "NEW ROOF"], "msg": "Capital Improvement: Roof replaced recently."},
+        {"keywords": ["SEISMIC", "RETROFIT", "BOLT"], "msg": "Safety Asset: Seismic retrofitting completed."},
+        {"keywords": ["COPPER", "REPIPE"], "msg": "Plumbing Asset: Copper repiping detected."},
+        {"keywords": ["100 AMP", "200 AMP", "PANEL UPGRADE"], "msg": "Electrical Asset: Main service panel upgraded."},
+    ]
+
+    for p in permits:
+        desc = str(p.get('description', '')).upper()
+        date = p.get('permit_creation_date', 'N/A')[:4]
         
-        # 2. TARGETED SEARCH
-        # We ask for the specific street name in the correct format
-        params = {
-            'street_name': clean_name,
-            '$limit': 2000,
-            '$order': 'permit_creation_date DESC'
-        }
-        
-        try:
-            r = requests.get(url, params=params)
-            data = r.json()
+        # Check Risks
+        for risk in risk_map:
+            # A. Complex logic: Solar Lease (Needs "SOLAR" + "LEASE")
+            if risk.get("match_all"):
+                if "SOLAR" in desc and any(term in desc for term in ["LEASE", "PPA", "POWER PURCHASE"]):
+                    score -= risk["deduction"]
+                    findings.append({"type": "risk", "msg": f"{risk['msg']} ({date})", "cat": risk['cat']})
             
-            # 3. FILTER FOR NUMBER
-            matches = []
-            if isinstance(data, list):
-                for p in data:
-                    p_num = str(p.get('street_number', ''))
-                    # Check if "301" is in "301" or "301-303"
-                    if clean_num in p_num:
-                        matches.append(p)
-
-            # 4. RESULTS
-            if len(matches) > 0:
-                st.success(f"✅ VERIFIED: Found {len(matches)} permits for {clean_num} {clean_name}!")
-                
-                # Risk Logic
-                risks = []
-                for p in matches:
-                    desc = str(p.get('description', '')).lower()
-                    date = p.get('permit_creation_date', 'N/A')[:10]
-                    if "solar" in desc and "lease" in desc:
-                        risks.append(f"⚠️ SOLAR LEASE: {date}")
-                    if "knob" in desc:
-                        risks.append(f"⚡ KNOB & TUBE WIRING: {date}")
-                
-                if risks:
-                    for r in risks: st.error(r)
-                else:
-                    st.info("No major 'Red Flag' keywords found in recent history.")
-                
-                # Show Data
-                st.dataframe(matches)
-            
-            else:
-                st.warning(f"We found permits on '{clean_name}', but none matched #{clean_num}.")
-                st.write("Tip: Do NOT add 'Street' or 'St' to the name box. Just 'Mission'.")
-
-        except Exception as e:
-            st.error(f"Error: {e}")
+            # B. Standard Logic
+            elif any(k in desc for k in risk["keywords"]):
+                # SAFEGUARD: Ignore "Burning" if it talks about a stove/fireplace/log
+                if "BURNING" in desc and any(safe in desc for safe in ["STOVE", "INSERT", "LOG", "WOOD"]):
