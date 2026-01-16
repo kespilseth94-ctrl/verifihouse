@@ -1,46 +1,67 @@
 import streamlit as st
 import requests
 
-# --- PAGE CONFIGURATION ---
-st.set_page_config(page_title="VeriHouse", page_icon="🛡️")
-st.title("🛡️ VeriHouse Property Audit")
-st.markdown("Coverage: San Francisco, CA (Active Permits)")
+st.set_page_config(page_title="VeriHouse Debugger", page_icon="🐞")
+st.title("🐞 VeriHouse: Connection Debugger")
 
 # --- INPUTS ---
 col1, col2 = st.columns(2)
 st_num = col1.text_input("Street Number", value="301")
 st_name = col2.text_input("Street Name", value="MISSION")
-run_btn = st.button("Verify Property", type="primary")
+run_btn = st.button("Run Diagnostic Test", type="primary")
 
-# --- ENGINE ---
 if run_btn:
-    with st.spinner("Connecting to Active Database..."):
-        # 1. USE THE ACTIVE DATABASE (The one that found 2 records earlier)
-        url = "https://data.sfgov.org/resource/i98e-djp9.json"
+    # 1. TARGET THE ACTIVE DATABASE (i98e)
+    url = "https://data.sfgov.org/resource/i98e-djp9.json"
+    
+    # 2. SIMPLEST POSSIBLE QUERY (No complex logic)
+    # We ask for records where the Street Name is EXACTLY what you typed (UPPERCASE)
+    clean_name = st_name.strip().upper()
+    
+    st.info(f"Connecting to: {url}")
+    st.info(f"Asking for: street_name = '{clean_name}'")
+    
+    params = {
+        'street_name': clean_name,  # Simple column filter (Safest method)
+        '$limit': 10 
+    }
+    
+    try:
+        r = requests.get(url, params=params)
+        data = r.json()
         
-        # 2. SIMPLE QUERY
-        # "Find permits where the street number is X and street name starts with Y"
-        clean_name = st_name.strip().upper()
-        clean_num = st_num.strip()
+        st.divider()
+        st.subheader("📡 Server Response")
         
-        params = {
-            '$where': f"street_number = '{clean_num}' AND street_name like '{clean_name}%'",
-            '$limit': 50,
-            '$order': 'permit_creation_date DESC'
-        }
-        
-        try:
-            r = requests.get(url, params=params)
-            data = r.json()
+        # 3. TRUTH SERUM (Show exactly what we got)
+        if isinstance(data, dict):
+            # If it's a Dictionary, IT IS AN ERROR.
+            st.error("❌ DATABASE ERROR:")
+            st.json(data)
+        elif isinstance(data, list):
+            # If it's a List, IT IS DATA.
+            st.success(f"✅ Success! Received a list of {len(data)} items.")
             
-            # 3. RESULTS DISPLAY (No Risk Logic, just Raw Data)
-            if len(data) > 0:
-                st.success(f"✅ SUCCESS: Found {len(data)} permits!")
-                st.write("Here is the raw data from the city:")
-                st.dataframe(data) 
+            if len(data) == 0:
+                st.warning("The list is empty. (0 Results)")
             else:
-                st.warning("Connected, but found 0 records matching that specific number.")
-                st.info(f"Try searching for just the street name '{clean_name}' to see if the building uses a different number.")
+                st.write("First item in the list:")
+                st.json(data[0]) # Show the first permit so we can see the column names
+                
+                # Check if our number exists
+                found = False
+                st.write("---")
+                st.write(f"Scanning {len(data)} downloads for Number '{st_num}'...")
+                for p in data:
+                    # Check 'street_number' column (it might be '301' or '301-303')
+                    if st_num in str(p.get('street_number', '')):
+                        st.success(f"🎯 FOUND IT: {p.get('street_number')} {p.get('street_name')}")
+                        st.json(p)
+                        found = True
+                
+                if not found:
+                    st.warning(f"Address number '{st_num}' not found in this batch.")
+                    st.write("Numbers found in this batch:", [p.get('street_number') for p in data])
 
-        except Exception as e:
-            st.error(f"Connection Error: {e}")
+    except Exception as e:
+        st.error(f"System Crash: {e}")
