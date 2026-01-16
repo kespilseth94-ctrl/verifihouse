@@ -30,18 +30,10 @@ with st.sidebar:
     st.markdown("**The Standard for Home Verification.**")
     st.divider()
     st.caption("Coverage: San Francisco, CA")
-    
-    st.divider()
-    st.warning("""
-    **Disclaimer:**
-    This tool is for informational purposes only and does not constitute a professional home inspection or legal advice. 
-    VerifiHouse is not affiliated with the City of San Francisco. 
-    Always verify public records with an official city clerk.
-    """)
+    st.warning("Disclaimer: Not a professional inspection. Verify with city.")
 
 # --- MAIN HERO SECTION ---
 st.markdown("<h1 style='text-align: center; color: #2C3E50;'>VeriHouse Property Audit</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: #666;'>Enter an address to generate a certified permit history report.</p>", unsafe_allow_html=True)
 st.write("")
 
 # --- INPUT SECTION ---
@@ -60,8 +52,7 @@ def calculate_verihouse_score(permits):
     deductions = {"SOLAR LEASE": -15, "KNOB & TUBE": -25, "UNPERMITTED ROOF": -10}
     solar_lease_terms = ["SUNRUN", "SOLARCITY", "TESLA", "LEASE", "PPA"]
     elec_risk = ["KNOB", "TUBE", "UNGROUNDED"]
-    quality_terms = ["COPPER", "ROMEX", "SPRINKLER", "SEISMIC", "RETROFIT", "FOUNDATION REPLACEMENT"]
-
+    
     for p in permits:
         desc = str(p.get('description', '')).upper()
         date = p.get('permit_creation_date', 'N/A')[:4]
@@ -77,23 +68,16 @@ def calculate_verihouse_score(permits):
         if any(k in desc for k in elec_risk):
             score += deductions["KNOB & TUBE"]
             findings.append({"type": "warning", "msg": f"Safety Risk: Evidence of Knob & Tube wiring ({date})"})
-            
-        if any(k in desc for k in quality_terms):
-            findings.append({"type": "verified", "msg": f"Modern System: {desc[:40]}... ({date})"})
-
-    if len(permits) == 0:
-        score = 60
-        findings.append({"type": "warning", "msg": "High Latent Risk: No digital permit records found."})
 
     return max(score, 0), findings
 
 # --- REPORT DISPLAY ---
 if run_btn:
-    with st.spinner(f"Verifying records for {street_num} {street_name}..."):
-        # UPDATED TO 'FUZZY SEARCH' MODE
-        url = "https://data.sfgov.org/resource/i98e-djp9.json"
+    with st.spinner(f"Searching Master Database for {street_num} {street_name}..."):
+        # SWITCHING BACK TO MASTER DATABASE (p4e4)
+        url = "https://data.sfgov.org/resource/p4e4-a5a7.json"
         
-        # This query says: "Find where Street Number is X, and Street Name STARTS WITH Y"
+        # KEEPING THE SMART SEARCH (Starts With...)
         query_string = f"street_number = '{street_num}' AND street_name like '{street_name.upper()}%'"
         params = {'$where': query_string, "$limit": 50, "$order": "permit_creation_date DESC"}
         
@@ -101,36 +85,22 @@ if run_btn:
             r = requests.get(url, params=params)
             data = r.json()
             
-            # --- DEBUGGER (Visible only if results are 0) ---
             if len(data) == 0:
-                st.error(f"DEBUG: Connected to SF Database, but found 0 records.")
-                st.info(f"Tried searching for: Street Number '{street_num}' AND Street Name starting with '{street_name.upper()}'")
-                st.caption("Possible Issue: This property might be in the Historical Database (Pre-2013) only.")
+                st.error(f"DEBUG: Master Database (p4e4) returned 0 records.")
+                st.info(f"Query: {query_string}")
             
             final_score, notes = calculate_verihouse_score(data)
             
-            if final_score >= 90: tier = "Platinum"
-            elif final_score >= 80: tier = "Gold"
-            elif final_score >= 70: tier = "Silver"
-            else: tier = "Standard"
-            
             st.divider()
             m1, m2, m3 = st.columns(3)
-            with m1: st.markdown(f"<div class='score-card'><div class='metric-label'>VeriHouse Score</div><div class='metric-value'>{final_score}</div></div>", unsafe_allow_html=True)
-            with m2: st.markdown(f"<div class='score-card'><div class='metric-label'>Asset Tier</div><div class='metric-value'>{tier}</div></div>", unsafe_allow_html=True)
-            with m3: st.markdown(f"<div class='score-card'><div class='metric-label'>Records Analyzed</div><div class='metric-value'>{len(data)}</div></div>", unsafe_allow_html=True)
+            with m1: st.metric("VeriHouse Score", final_score)
+            with m2: st.metric("Asset Tier", "Standard" if final_score < 80 else "Gold")
+            with m3: st.metric("Records Found", len(data))
 
             st.write("")
             st.subheader("📋 Verification Log")
-            
-            if len(notes) == 0 and len(data) > 0:
-                st.info("No specific positive or negative flags found. Property appears standard.")
-            
-            for note in notes:
-                if note["type"] == "verified":
-                    st.markdown(f'<span class="badge-verified">✓ VERIFIED</span> {note["msg"]}', unsafe_allow_html=True)
-                else:
-                    st.markdown(f'<span class="badge-warning">⚠ ALERT</span> {note["msg"]}', unsafe_allow_html=True)
+            if len(data) > 0:
+                st.dataframe(data) # Show the raw data table to PROVE it found them
 
         except Exception as e:
             st.error(f"Connection Error: {e}")
