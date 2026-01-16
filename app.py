@@ -1,85 +1,49 @@
 import streamlit as st
+import pandas as pd
 import requests
 
-st.set_page_config(page_title="VeriHouse", page_icon="🛡️")
-st.title("🛡️ VeriHouse Property Audit")
-st.markdown("Coverage: San Francisco, CA (Wildcard Search)")
+st.set_page_config(page_title="VeriHouse Live Feed", page_icon="📡", layout="wide")
+st.title("📡 VeriHouse: City Pulse")
+st.markdown("Diagnosing the connection by fetching the **last 10 permits** from the entire city.")
 
-# --- INPUTS ---
-col1, col2 = st.columns(2)
-st_num = col1.text_input("Street Number", value="301")
-st_name = col2.text_input("Street Name", value="MISSION")
-run_btn = st.button("Verify Property", type="primary")
-
-# --- ENGINE ---
-if run_btn:
-    with st.spinner("Scanning entire street block..."):
-        # 1. USE THE ACTIVE DATABASE
-        url = "https://data.sfgov.org/resource/i98e-djp9.json"
-        
-        # 2. WILDCARD SEARCH PARAMETERS
-        clean_name = st_name.strip().upper()
-        clean_num = st_num.strip()
-        
-        # We ask for anything starting with the street name (e.g. "MISSION%")
-        params = {
-            '$where': f"street_name like '{clean_name}%'",
-            '$limit': 2000,
-            '$order': 'permit_creation_date DESC'
-        }
-        
-        # 3. EXECUTE SEARCH (With Correct Error Handling)
-        try:
+if st.button("🔴 Get Live City Data", type="primary"):
+    
+    # 1. Use the Active Database
+    url = "https://data.sfgov.org/resource/i98e-djp9.json"
+    
+    # 2. NO SEARCH FILTER. Just "Give me the newest data."
+    params = {
+        '$limit': 10,
+        '$order': 'permit_creation_date DESC'
+    }
+    
+    try:
+        with st.spinner("Ping SF Gov Server..."):
             r = requests.get(url, params=params)
             data = r.json()
             
-            # Filter the results locally in Python
-            matches = []
-            nearby_numbers = set()
+        if isinstance(data, list) and len(data) > 0:
+            st.success(f"✅ SUCCESS! Downloaded {len(data)} recent permits.")
+            st.info("The app works. Here is exactly how the City formats their addresses:")
             
-            if isinstance(data, list):
-                for p in data:
-                    p_num = str(p.get('street_number', ''))
-                    p_name = str(p.get('street_name', ''))
-                    
-                    # Debugging: Collect all numbers we find
-                    nearby_numbers.add(f"{p_num} {p_name}")
-                    
-                    # Check if "301" is in the number (e.g. finds "301" and "301-305")
-                    if clean_num in p_num:
-                        matches.append(p)
+            # 3. SHOW THE "SECRET" FORMAT
+            # We display a clean table of just the address parts
+            df = pd.DataFrame(data)
             
-            # 4. DISPLAY RESULTS
-            if len(matches) > 0:
-                st.success(f"✅ VERIFIED: Found {len(matches)} permits for {clean_num} {clean_name}!")
-                
-                # Risk Scan
-                risks = []
-                for p in matches:
-                    desc = str(p.get('description', '')).upper()
-                    date = p.get('permit_creation_date', 'N/A')[:10]
-                    if "SOLAR" in desc and "LEASE" in desc:
-                        risks.append(f"⚠️ SOLAR LEASE: {date}")
-                    if "KNOB" in desc:
-                        risks.append(f"⚡ KNOB & TUBE WIRING: {date}")
-                
-                if risks:
-                    for r in risks: st.error(r)
-                else:
-                    st.info("No major 'Red Flag' keywords found in recent history.")
-                    
-                st.dataframe(matches)
+            # Check which columns exist to avoid errors
+            cols_to_show = ['street_number', 'street_name', 'street_suffix', 'permit_creation_date', 'description']
+            # Only pick columns that actually exist in the data
+            actual_cols = [c for c in cols_to_show if c in df.columns]
             
-            else:
-                st.warning(f"We downloaded {len(data)} permits for '{clean_name}', but none matched #{clean_num}.")
-                
-                if len(nearby_numbers) > 0:
-                    st.write("Here are the addresses we DID find on this street (check for typos):")
-                    # Convert set to list and show first 10
-                    st.write(list(nearby_numbers)[:10])
-                else:
-                    st.error("Zero results. The city might list this street under a completely different name.")
+            st.table(df[actual_cols].head(10))
+            
+            st.write("---")
+            st.write("👇 **Look at the 'street_name' and 'street_suffix' columns above.**")
+            st.caption("Do they use 'MISSION' and 'ST'? Or 'MISSION' and 'STREET'? Use that exact spelling in your next search.")
+            
+        else:
+            st.error("⚠️ Connection successful, but the list was empty.")
+            st.json(data)
 
-        except Exception as e:
-            # This is the block that was missing/broken before
-            st.error(f"System Error: {e}")
+    except Exception as e:
+        st.error(f"Connection Error: {e}")
