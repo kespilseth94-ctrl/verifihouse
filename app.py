@@ -3,7 +3,7 @@ import requests
 
 st.set_page_config(page_title="VeriHouse", page_icon="🛡️")
 st.title("🛡️ VeriHouse Property Audit")
-st.markdown("Coverage: San Francisco, CA (Smart Search)")
+st.markdown("Coverage: San Francisco, CA (Wildcard Search)")
 
 # --- INPUTS ---
 col1, col2 = st.columns(2)
@@ -13,63 +13,67 @@ run_btn = st.button("Verify Property", type="primary")
 
 # --- ENGINE ---
 if run_btn:
-    with st.spinner("Searching City Archives..."):
-        # We use the Active Database (i98e)
+    with st.spinner("Scanning entire street block..."):
+        # 1. USE THE ACTIVE DATABASE (Confirmed Working)
         url = "https://data.sfgov.org/resource/i98e-djp9.json"
         
+        # 2. WILDCARD SEARCH
+        # We tell the API: "Give me anything where the Street Name STARTS with this word."
+        # We DO NOT send the street number to the API (to avoid "301" vs "301-303" errors)
+        clean_name = st_name.strip().upper()
         clean_num = st_num.strip()
-        base_name = st_name.strip().upper()
         
-        # THE SMART RETRY LOGIC
-        # We define 3 variations of the street name to try
-        variations = [base_name] # 1. Try "MISSION"
-        if "ST" not in base_name:
-            variations.append(f"{base_name} ST")      # 2. Try "MISSION ST"
-            variations.append(f"{base_name} STREET")  # 3. Try "MISSION STREET"
-            variations.append(f"{base_name} AVE")     # 4. Try "MISSION AVE"
+        params = {
+            '$where': f"street_name like '{clean_name}%'",
+            '$limit': 1000, # Get a huge batch to be safe
+            '$order': 'permit_creation_date DESC'
+        }
         
-        found_data = []
-        used_name = ""
-        
-        for name_try in variations:
-            params = {
-                'street_number': clean_num,
-                'street_name': name_try,
-                '$limit': 50,
-                '$order': 'permit_creation_date DESC'
-            }
-            try:
-                r = requests.get(url, params=params)
-                data = r.json()
-                if isinstance(data, list) and len(data) > 0:
-                    found_data = data
-                    used_name = name_try
-                    break # Stop looking, we found it!
-            except:
-                pass
-
-        # --- RESULTS ---
-        if len(found_data) > 0:
-            st.success(f"✅ Found {len(found_data)} permits using name: '{used_name}'")
+        try:
+            r = requests.get(url, params=params)
+            data = r.json()
             
-            # Simple Risk Scan
-            risks = []
-            for p in found_data:
-                desc = str(p.get('description', '')).upper()
-                date = p.get('permit_creation_date', 'N/A')[:10]
-                if "SOLAR" in desc and "LEASE" in desc:
-                    risks.append(f"⚠️ SOLAR LEASE: {date}")
-                if "KNOB" in desc:
-                    risks.append(f"⚡ KNOB & TUBE WIRING: {date}")
+            # 3. PYTHON FILTERING (The smart part)
+            # We look for "301" inside the results ourselves
+            matches = []
+            nearby_numbers = set()
             
-            if risks:
-                for r in risks: st.error(r)
-            else:
-                st.info("No major 'Red Flag' keywords found in recent history.")
+            if isinstance(data, list):
+                for p in data:
+                    p_num = str(p.get('street_number', ''))
+                    p_name = str(p.get('street_name', ''))
+                    
+                    # Store purely for debugging
+                    nearby_numbers.add(f"{p_num} {p_name}")
+                    
+                    # FUZZY MATCH: Does "301" appear in the number? 
+                    # (Finds "301", "301-303", "301A")
+                    if clean_num == p_num:
+                        matches.append(p)
+            
+            # 4. RESULTS
+            if len(matches) > 0:
+                st.success(f"✅ VERIFIED: Found {len(matches)} permits for {clean_num} {clean_name}!")
                 
-            st.dataframe(found_data)
+                # Risk Scan
+                risks = []
+                for p in matches:
+                    desc = str(p.get('description', '')).upper()
+                    date = p.get('permit_creation_date', 'N/A')[:10]
+                    if "SOLAR" in desc and "LEASE" in desc:
+                        risks.append(f"⚠️ SOLAR LEASE: {date}")
+                    if "KNOB" in desc:
+                        risks.append(f"⚡ KNOB & TUBE WIRING: {date}")
+                
+                if risks:
+                    for r in risks: st.error(r)
+                else:
+                    st.info("No major 'Red Flag' keywords found in recent history.")
+                    
+                st.dataframe(matches)
             
-        else:
-            st.warning(f"Could not find address #{clean_num} on {base_name}.")
-            st.info(f"We tried searching: {', '.join(variations)}")
-            st.write("Tip: Verify the street number is correct for this specific building.")
+            else:
+                st.warning(f"We downloaded {len(data)} permits for '{clean_name}', but none matched #{clean_num}.")
+                
+                if len(nearby_numbers) > 0:
+                    st
