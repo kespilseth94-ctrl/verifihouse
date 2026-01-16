@@ -14,27 +14,26 @@ run_btn = st.button("Verify Property", type="primary")
 # --- ENGINE ---
 if run_btn:
     with st.spinner("Scanning entire street block..."):
-        # 1. USE THE ACTIVE DATABASE (Confirmed Working)
+        # 1. USE THE ACTIVE DATABASE
         url = "https://data.sfgov.org/resource/i98e-djp9.json"
         
-        # 2. WILDCARD SEARCH
-        # We tell the API: "Give me anything where the Street Name STARTS with this word."
-        # We DO NOT send the street number to the API (to avoid "301" vs "301-303" errors)
+        # 2. WILDCARD SEARCH PARAMETERS
         clean_name = st_name.strip().upper()
         clean_num = st_num.strip()
         
+        # We ask for anything starting with the street name (e.g. "MISSION%")
         params = {
             '$where': f"street_name like '{clean_name}%'",
-            '$limit': 1000, # Get a huge batch to be safe
+            '$limit': 2000,
             '$order': 'permit_creation_date DESC'
         }
         
+        # 3. EXECUTE SEARCH (With Correct Error Handling)
         try:
             r = requests.get(url, params=params)
             data = r.json()
             
-            # 3. PYTHON FILTERING (The smart part)
-            # We look for "301" inside the results ourselves
+            # Filter the results locally in Python
             matches = []
             nearby_numbers = set()
             
@@ -43,15 +42,14 @@ if run_btn:
                     p_num = str(p.get('street_number', ''))
                     p_name = str(p.get('street_name', ''))
                     
-                    # Store purely for debugging
+                    # Debugging: Collect all numbers we find
                     nearby_numbers.add(f"{p_num} {p_name}")
                     
-                    # FUZZY MATCH: Does "301" appear in the number? 
-                    # (Finds "301", "301-303", "301A")
-                    if clean_num == p_num:
+                    # Check if "301" is in the number (e.g. finds "301" and "301-305")
+                    if clean_num in p_num:
                         matches.append(p)
             
-            # 4. RESULTS
+            # 4. DISPLAY RESULTS
             if len(matches) > 0:
                 st.success(f"✅ VERIFIED: Found {len(matches)} permits for {clean_num} {clean_name}!")
                 
@@ -76,4 +74,12 @@ if run_btn:
                 st.warning(f"We downloaded {len(data)} permits for '{clean_name}', but none matched #{clean_num}.")
                 
                 if len(nearby_numbers) > 0:
-                    st
+                    st.write("Here are the addresses we DID find on this street (check for typos):")
+                    # Convert set to list and show first 10
+                    st.write(list(nearby_numbers)[:10])
+                else:
+                    st.error("Zero results. The city might list this street under a completely different name.")
+
+        except Exception as e:
+            # This is the block that was missing/broken before
+            st.error(f"System Error: {e}")
