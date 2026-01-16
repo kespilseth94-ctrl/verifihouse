@@ -5,7 +5,7 @@ import requests
 st.set_page_config(page_title="VeriHouse", page_icon="🛡️")
 
 st.title("🛡️ VeriHouse Property Audit")
-st.markdown("Coverage: San Francisco, CA")
+st.markdown("Coverage: San Francisco, CA (Active Permits)")
 
 # --- INPUTS ---
 col1, col2 = st.columns(2)
@@ -15,22 +15,18 @@ run_btn = st.button("Verify Property", type="primary")
 
 # --- ENGINE ---
 if run_btn:
-    with st.spinner("Searching City Database..."):
-        # We use the OLD reliable database (p4e4)
-        url = "https://data.sfgov.org/resource/p4e4-a5a7.json"
+    with st.spinner("Scanning Modern Permit Database..."):
+        # 1. USE THE MODERN DATABASE (i98e)
+        url = "https://data.sfgov.org/resource/i98e-djp9.json"
         
-        # 1. CLEAN THE INPUTS
-        # We strip spaces to avoid " 301 " errors
-        clean_num = st_num.strip()
+        # 2. BROAD SEARCH: Fetch everything on the street, then filter locally
+        # This prevents "Exact Match" errors on the street number
         clean_name = st_name.strip().upper()
-        
-        # 2. BUILD THE QUERY (The "Goldilocks" Filter)
-        # This SQL logic says: "Number matches exactly" AND "Name starts with user input"
-        query = f"street_number = '{clean_num}' AND street_name like '{clean_name}%'"
+        query = f"street_name like '{clean_name}%'"
         
         params = {
             '$where': query,
-            '$limit': 50,
+            '$limit': 2000, # Fetch a large batch to ensure we catch the number
             '$order': 'permit_creation_date DESC'
         }
         
@@ -38,22 +34,29 @@ if run_btn:
             r = requests.get(url, params=params)
             data = r.json()
             
-            # ERROR TRAP: Check if the API sent back an error message (Dict) instead of a list
-            if isinstance(data, dict):
-                st.error("City Database Error")
-                st.json(data) # Show the error to the user
-            elif len(data) == 0:
-                st.warning("No records found.")
-                st.info(f"The app looked for: Street #{clean_num} on {clean_name}...")
-            else:
-                st.success(f"Found {len(data)} permits!")
+            # 3. FILTER LOCALLY (Robust Matching)
+            # We look for the user's number inside the results
+            exact_matches = []
+            nearby_matches = []
+            
+            for p in data:
+                p_num = str(p.get('street_number', ''))
+                # Exact Match
+                if p_num == st_num.strip():
+                    exact_matches.append(p)
+                # Save first 5 others for debugging
+                elif len(nearby_matches) < 5:
+                    nearby_matches.append(p)
+
+            # 4. DISPLAY RESULTS
+            if len(exact_matches) > 0:
+                st.success(f"✅ Found {len(exact_matches)} permits for {st_num} {clean_name}!")
                 
-                # RISK LOGIC
+                # RISK SCANNER
                 risks = []
-                for p in data:
+                for p in exact_matches:
                     desc = str(p.get('description', '')).upper()
                     date = p.get('permit_creation_date', 'N/A')[:10]
-                    
                     if "SOLAR" in desc and "LEASE" in desc:
                         risks.append(f"⚠️ SOLAR LEASE: {date}")
                     if "KNOB" in desc:
@@ -62,10 +65,20 @@ if run_btn:
                 if risks:
                     for r in risks: st.error(r)
                 else:
-                    st.info("No major 'Red Flag' keywords found in recent history.")
-                    
-                # Show Raw Data (So you know it's real)
-                st.dataframe(data)
+                    st.info("No immediate Red Flags detected in recent history.")
+                
+                with st.expander("View Raw Permit Log"):
+                    st.dataframe(exact_matches)
+            
+            else:
+                st.warning(f"No exact matches for #{st_num}.")
+                if len(nearby_matches) > 0:
+                    st.info(f"However, we DID find permits for these nearby buildings on {clean_name}:")
+                    # Show nearby addresses so you KNOW the app is working
+                    debug_data = [{"Number": m.get('street_number'), "Date": m.get('permit_creation_date')} for m in nearby_matches]
+                    st.table(debug_data)
+                else:
+                    st.error(f"Zero records found for street name '{clean_name}'. Check spelling.")
 
         except Exception as e:
             st.error(f"Connection Error: {e}")
