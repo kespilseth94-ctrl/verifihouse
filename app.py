@@ -2,7 +2,7 @@ import streamlit as st
 import requests
 import datetime
 
-# --- 1. CONFIGURATION ---
+# --- 1. CONFIGURATION & STYLING ---
 st.set_page_config(page_title="VeriHouse", page_icon="🛡️", layout="wide")
 st.markdown("""
     <style>
@@ -44,37 +44,19 @@ def analyze_risks(permits):
     score = 100
     findings = []
     
-    # RISK DICTIONARY
+    # COMPRESSED RISK MAP (To prevent copy-paste errors)
     risk_map = [
         {"keywords": ["KNOB", "TUBE"], "deduction": 25, "msg": "Major Electrical Risk: Knob & Tube Wiring detected.", "cat": "fire"},
         {"keywords": ["ALUMINUM WIRING"], "deduction": 15, "msg": "Fire Risk: Aluminum branch wiring detected.", "cat": "fire"},
         {"keywords": ["UNPERMITTED", "ILLEGAL WIRING"], "deduction": 20, "msg": "Compliance Risk: History of unpermitted work.", "cat": "legal"},
-        {"keywords": ["UNDERPIN", "SHORING", "FOUNDATION REPAIR", "SETTLEMENT"], "deduction": 30, "msg": "Major Structural Risk: Foundation movement detected.", "cat": "structure"},
-        {"keywords": ["SISTERING", "JOIST REPAIR", "DRY ROT", "TERMITE"], "deduction": 15, "msg": "Structural Decay: Frame damage (rot/termites) noted.", "cat": "structure"},
-        {"keywords": ["FIRE DAMAGE", "FIRE REPAIR", "CHARRED", "SCORCH", "BURNING"], "deduction": 30, "msg": "Structural Risk: Evidence of past fire/burning.", "cat": "fire"},
+        {"keywords": ["UNDERPIN", "SHORING", "FOUNDATION"], "deduction": 30, "msg": "Major Structural Risk: Foundation movement detected.", "cat": "structure"},
+        {"keywords": ["SISTERING", "JOIST", "DRY ROT", "TERMITE"], "deduction": 15, "msg": "Structural Decay: Frame damage (rot/termites) noted.", "cat": "structure"},
+        {"keywords": ["FIRE DAMAGE", "CHARRED", "SCORCH", "BURNING"], "deduction": 30, "msg": "Structural Risk: Evidence of past fire/burning.", "cat": "fire"},
         {"keywords": ["WATER DAMAGE", "LEAK", "MOLD", "FUNGAL"], "deduction": 20, "msg": "Health Risk: History of water intrusion or mold.", "cat": "water"},
-        {"keywords": ["REMEDIATION", "ABATEMENT", "ASBESTOS", "LEAD PAINT"], "deduction": 10, "msg": "Toxic Material: History of hazmat remediation.", "cat": "health"},
-        {"keywords": ["NOV ", "NOTICE OF VIOLATION", "ORDER OF ABATEMENT"], "deduction": 25, "msg": "Legal Risk: Property has received City Violations.", "cat": "legal"},
+        {"keywords": ["REMEDIATION", "ASBESTOS", "LEAD PAINT"], "deduction": 10, "msg": "Toxic Material: History of hazmat remediation.", "cat": "health"},
+        {"keywords": ["NOV ", "NOTICE OF VIOLATION", "ABATEMENT"], "deduction": 25, "msg": "Legal Risk: Property has received City Violations.", "cat": "legal"},
         {"keywords": ["SOLAR", "LEASE", "PPA", "SUNRUN", "TESLA"], "match_all": True, "deduction": 15, "msg": "Financial Encumbrance: Solar Lease detected.", "cat": "finance"},
     ]
     
-    # ASSET DICTIONARY
     assets = [
-        {"keywords": ["REROOF", "RE-ROOF", "NEW ROOF"], "msg": "Capital Improvement: Roof replaced recently."},
-        {"keywords": ["SEISMIC", "RETROFIT", "BOLT"], "msg": "Safety Asset: Seismic retrofitting completed."},
-        {"keywords": ["COPPER", "REPIPE"], "msg": "Plumbing Asset: Copper repiping detected."},
-        {"keywords": ["100 AMP", "200 AMP", "PANEL UPGRADE"], "msg": "Electrical Asset: Main service panel upgraded."},
-    ]
-
-    for p in permits:
-        desc = str(p.get('description', '')).upper()
-        date = p.get('permit_creation_date', 'N/A')[:4]
-        
-        # Check Risks
-        for risk in risk_map:
-            if risk.get("match_all"):
-                if "SOLAR" in desc and any(term in desc for term in ["LEASE", "PPA"]):
-                    score -= risk["deduction"]
-                    findings.append({"type": "risk", "msg": f"{risk['msg']} ({date})", "cat": risk['cat']})
-            elif any(k in desc for k in risk["keywords"]):
-                if "BURNING" in desc and
+        {"keywords": ["REROOF", "RE-ROOF", "NEW ROOF"], "msg":
