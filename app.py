@@ -2,50 +2,106 @@ import streamlit as st
 import requests
 import datetime
 
-# --- 1. CONFIGURATION ---
+# --- 1. CONFIGURATION & STYLING ---
 st.set_page_config(page_title="VeriHouse", page_icon="🛡️", layout="wide")
+
 st.markdown("""
     <style>
-    .score-card { padding: 20px; border-radius: 10px; background-color: #f8f9fa; border: 1px solid #e9ecef; text-align: center; }
-    .metric-value { font-size: 2.2em; font-weight: 800; color: #2C3E50; }
-    .metric-label { font-size: 0.85em; color: #6c757d; text-transform: uppercase; letter-spacing: 1px; }
-    .badge-risk { background-color: #fee2e2; color: #991b1b; padding: 4px 10px; border-radius: 15px; font-size: 0.8em; font-weight: bold; }
-    .badge-safe { background-color: #d1fae5; color: #065f46; padding: 4px 10px; border-radius: 15px; font-size: 0.8em; font-weight: bold; }
+    .score-card { 
+        padding: 20px; 
+        border-radius: 10px; 
+        background-color: #f8f9fa; 
+        border: 1px solid #e9ecef; 
+        text-align: center;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    }
+    .metric-value { 
+        font-size: 2.2em; 
+        font-weight: 800; 
+        color: #2C3E50; 
+    }
+    .metric-label { 
+        font-size: 0.85em; 
+        color: #6c757d; 
+        text-transform: uppercase; 
+        letter-spacing: 1px; 
+    }
+    .badge-risk { 
+        background-color: #fee2e2; 
+        color: #991b1b; 
+        padding: 4px 10px; 
+        border-radius: 15px; 
+        font-size: 0.8em; 
+        font-weight: bold; 
+    }
+    .badge-safe { 
+        background-color: #d1fae5; 
+        color: #065f46; 
+        padding: 4px 10px; 
+        border-radius: 15px; 
+        font-size: 0.8em; 
+        font-weight: bold; 
+    }
     </style>
 """, unsafe_allow_html=True)
 
-# --- 2. STATE ---
+# --- 2. SESSION STATE ---
 if 'data_loaded' not in st.session_state:
     st.session_state.data_loaded = False
     st.session_state.house_permits = []
     st.session_state.rc_data = None
+    st.session_state.input_num = "301"
+    st.session_state.input_name = "Mission"
 
-# --- 3. FUNCTIONS ---
+# --- 3. DATA FUNCTIONS ---
 def run_audit():
     with st.spinner("Connecting to City Database..."):
-        # Fetch Permits
+        # 1. Fetch SF Permits
         url = "https://data.sfgov.org/resource/i98e-djp9.json"
-        p_params = {'street_name': st.session_state.input_name.strip().title(), '$limit': 2000, '$order': 'permit_creation_date DESC'}
+        # We clean the input here to ensure matches
+        clean_name = st.session_state.input_name.strip().title()
+        clean_num = st.session_state.input_num.strip()
+        
+        params = {
+            'street_name': clean_name, 
+            '$limit': 2000, 
+            '$order': 'permit_creation_date DESC'
+        }
+        
         try:
-            r = requests.get(url, params=p_params)
+            r = requests.get(url, params=params)
             data = r.json()
-            st.session_state.house_permits = [p for p in data if st.session_state.input_num.strip() in str(p.get('street_number', ''))]
-        except: st.session_state.house_permits = []
+            # Filter specifically for the street number
+            matches = [p for p in data if clean_num in str(p.get('street_number', ''))]
+            st.session_state.house_permits = matches
+        except:
+            st.session_state.house_permits = []
         
-        # Fetch RentCast
+        # 2. Fetch RentCast Data
         try:
+            rc_key = "3a69e2134c654a4d95e7e7d506b76feb"
             rc_url = "https://api.rentcast.io/v1/properties"
-            rc_head = {'X-Api-Key': "3a69e2134c654a4d95e7e7d506b76feb"}
-            rc_r = requests.get(rc_url, headers=rc_head, params={'address': f"{st.session_state.input_num} {st.session_state.input_name}, San Francisco, CA"})
-            st.session_state.rc_data = rc_r.json()[0] if isinstance(rc_r.json(), list) and len(rc_r.json()) > 0 else None
-        except: st.session_state.rc_data = None
-        
+            rc_params = {'address': f"{clean_num} {clean_name}, San Francisco, CA"}
+            rc_head = {'X-Api-Key': rc_key}
+            
+            r_rc = requests.get(rc_url, headers=rc_head, params=rc_params)
+            rc_json = r_rc.json()
+            
+            # RentCast returns a list, we need the first item
+            if isinstance(rc_json, list) and len(rc_json) > 0:
+                st.session_state.rc_data = rc_json[0]
+            else:
+                st.session_state.rc_data = None
+        except:
+            st.session_state.rc_data = None
+            
         st.session_state.data_loaded = True
 
 def analyze_risks(permits):
     score = 100
     findings = []
-    # Compact Risk Map
+    
+    # VERTICAL DEFINITIONS (Safe from cut-offs)
     risks = [
         {"k": ["KNOB", "TUBE"], "d": 25, "c": "fire", "m": "Major Electrical Risk: Knob & Tube Wiring."},
         {"k": ["ALUMINUM WIRING"], "d": 15, "c": "fire", "m": "Fire Risk: Aluminum branch wiring."},
@@ -56,84 +112,60 @@ def analyze_risks(permits):
         {"k": ["WATER DAMAGE", "MOLD", "FUNGAL"], "d": 20, "c": "water", "m": "Health Risk: Water intrusion/mold."},
         {"k": ["REMEDIATION", "ASBESTOS", "LEAD"], "d": 10, "c": "health", "m": "Toxic Material: Hazmat remediation."},
         {"k": ["NOV ", "NOTICE OF VIOLATION"], "d": 25, "c": "legal", "m": "Legal Risk: City Violations found."},
+        {"k": ["SOLAR", "LEASE", "PPA"], "d": 15, "c": "finance", "m": "Financial Encumbrance: Solar Lease."}
     ]
     
     for p in permits:
         d = str(p.get('description', '')).upper()
         yr = p.get('permit_creation_date', 'N/A')[:4]
-        # Check Standard Risks
+        
         for r in risks:
+            # Check keywords
             if any(key in d for key in r["k"]):
-                if "BURNING" in d and "STOVE" in d: continue # False positive check
+                # Safety check for 'burning' stoves
+                if "BURNING" in d and "STOVE" in d: continue 
+                
                 score -= r["d"]
-                findings.append({"type": "risk", "msg": f"{r['m']} ({yr})", "cat": r['c']})
-        # Check Solar
-        if "SOLAR" in d and ("LEASE" in d or "PPA" in d):
-            score -= 15
-            findings.append({"type": "risk", "msg": f"Financial Encumbrance: Solar Lease. ({yr})", "cat": "finance"})
-            
+                findings.append({
+                    "type": "risk", 
+                    "msg": f"{r['m']} ({yr})", 
+                    "cat": r['c']
+                })
+                
     return max(score, 0), findings
+
+def predict_maintenance(age_year, permits):
+    preds = []
+    text = " ".join([str(p.get('description', '')).upper() for p in permits])
+    
+    if age_year < 1960 and "REWIRE" not in text and "PANEL" not in text:
+        preds.append({"item": "Full Rewire", "prob": "HIGH", "cost": "$15k-$30k", "reason": f"Built {age_year}, no rewiring found."})
+    
+    if age_year < 1975 and "COPPER" not in text and "REPIPE" not in text:
+        preds.append({"item": "Galvanized Pipe Swap", "prob": "MEDIUM", "cost": "$8k-$15k", "reason": f"Built {age_year}, original pipes likely."})
+
+    recent_roof = False
+    for p in permits:
+        d = str(p.get('description', '')).upper()
+        if "ROOF" in d:
+             # simple date check
+             try:
+                 yr = int(p.get('permit_creation_date', '1900')[:4])
+                 if yr > (datetime.datetime.now().year - 20): recent_roof = True
+             except: pass
+             
+    if not recent_roof:
+         preds.append({"item": "Roof Replacement", "prob": "HIGH", "cost": "$12k-$25k", "reason": "No roof permits in 20 years."})
+            
+    return preds
 
 def check_listing(text, permits):
     text = text.upper()
     issues = []
     cy = datetime.datetime.now().year
     
-    # Kitchen Check
+    # Kitchen
     if any(x in text for x in ["NEW KITCHEN", "REMODELED KITCHEN", "CHEF"]):
-        if not any("KITCHEN" in str(p.get('description','')).upper() and int(p.get('permit_creation_date','1900')[:4]) > (cy-10) for p in permits):
-            issues.append("Claim: 'Remodeled Kitchen' - No permits found in last 10 yrs.")
-    
-    # Bath Check
-    if any(x in text for x in ["NEW BATH", "UPDATED BATH", "SPA-LIKE"]):
-        if not any(("BATH" in str(p.get('description','')).upper() or "SHOWER" in str(p.get('description','')).upper()) and int(p.get('permit_creation_date','1900')[:4]) > (cy-10) for p in permits):
-            issues.append("Claim: 'Updated Bathroom' - No permits found in last 10 yrs.")
-            
-    return issues
-
-# --- 4. UI LAYOUT ---
-with st.sidebar:
-    st.title("🛡️ VeriHouse")
-    st.info("System Online 🟢")
-
-st.markdown("<h1 style='text-align: center;'>VeriHouse Property Audit</h1>", unsafe_allow_html=True)
-c1, c2 = st.columns([1, 2])
-with c2:
-    sc1, sc2 = st.columns(2)
-    sc1.text_input("Street Number", value="301", key="input_num")
-    sc2.text_input("Street Name", value="Mission", key="input_name") 
-    st.button("Generate Full Audit", type="primary", use_container_width=True, on_click=run_audit)
-
-# --- 5. REPORT ---
-if st.session_state.data_loaded:
-    permits = st.session_state.house_permits
-    
-    if len(permits) > 0:
-        score, findings = analyze_risks(permits)
-        tier = "PLATINUM" if score >= 90 else "GOLD" if score >= 80 else "SILVER" if score >= 70 else "STANDARD"
-        
-        st.divider()
-        m1, m2, m3 = st.columns(3)
-        m1.markdown(f"<div class='score-card'><div class='metric-label'>Score</div><div class='metric-value'>{score}</div></div>", unsafe_allow_html=True)
-        m2.markdown(f"<div class='score-card'><div class='metric-label'>Tier</div><div class='metric-value'>{tier}</div></div>", unsafe_allow_html=True)
-        m3.markdown(f"<div class='score-card'><div class='metric-label'>Permits</div><div class='metric-value'>{len(permits)}</div></div>", unsafe_allow_html=True)
-        
-        st.subheader("📋 Forensic Log")
-        if not findings: st.success("No major risks found.")
-        for f in findings:
-            st.markdown(f"<div style='margin:5px'><span class='badge-risk'>⚠ {f['cat'].upper()}</span> {f['msg']}</div>", unsafe_allow_html=True)
-            
-        st.divider()
-        st.subheader("🕵️ Listing Truth Check")
-        with st.form("check_form"):
-            user_text = st.text_area("Paste Listing Description:")
-            if st.form_submit_button("Analyze"):
-                discrepancies = check_listing(user_text, permits)
-                if discrepancies:
-                    st.error(f"Found {len(discrepancies)} Potential Discrepancies:")
-                    for d in discrepancies: st.write(f"- {d}")
-                else: st.success("✅ Claims verified against history.")
-        
-        with st.expander("Raw Permit Data"): st.dataframe(permits)
-    else:
-        st.warning(f"No permits found for {st.session_state.input_num} {st.session_state.input_name}. Check spelling.")
+        found = False
+        for p in permits:
+            d
