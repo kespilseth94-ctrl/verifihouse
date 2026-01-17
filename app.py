@@ -34,15 +34,9 @@ with st.sidebar:
     st.title("🛡️ VeriHouse")
     st.markdown("**Residential Risk Intelligence**")
     
-    # SILENT AUTHENTICATION
-    # If key is in secrets, load it without showing ANY UI
-    rentcast_key = None
-    if 'rentcast_api_key' in st.secrets:
-        rentcast_key = st.secrets['rentcast_api_key']
-    else:
-        # Only show input if secrets are missing (Fallback)
-        st.markdown("### 🔑 Data Connections")
-        rentcast_key = st.text_input("RentCast API Key", type="password")
+    # --- HARDCODED KEY (No Visual Input) ---
+    # This variable holds the key directly so the user doesn't have to type it.
+    rentcast_key = "3a69e2134c654a4d95e7e7d506b76feb"
     
     st.divider()
     st.info("System Status: Online 🟢")
