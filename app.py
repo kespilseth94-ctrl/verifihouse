@@ -2,7 +2,7 @@ import streamlit as st
 import requests
 import datetime
 
-# --- 1. CONFIGURATION & STYLING ---
+# --- 1. CONFIGURATION ---
 st.set_page_config(page_title="VeriHouse", page_icon="🛡️", layout="wide")
 st.markdown("""
     <style>
@@ -44,19 +44,123 @@ def analyze_risks(permits):
     score = 100
     findings = []
     
-    # COMPRESSED RISK MAP (To prevent copy-paste errors)
+    # RISK DICTIONARY (Vertical Format to prevent cut-offs)
     risk_map = [
-        {"keywords": ["KNOB", "TUBE"], "deduction": 25, "msg": "Major Electrical Risk: Knob & Tube Wiring detected.", "cat": "fire"},
-        {"keywords": ["ALUMINUM WIRING"], "deduction": 15, "msg": "Fire Risk: Aluminum branch wiring detected.", "cat": "fire"},
-        {"keywords": ["UNPERMITTED", "ILLEGAL WIRING"], "deduction": 20, "msg": "Compliance Risk: History of unpermitted work.", "cat": "legal"},
-        {"keywords": ["UNDERPIN", "SHORING", "FOUNDATION"], "deduction": 30, "msg": "Major Structural Risk: Foundation movement detected.", "cat": "structure"},
-        {"keywords": ["SISTERING", "JOIST", "DRY ROT", "TERMITE"], "deduction": 15, "msg": "Structural Decay: Frame damage (rot/termites) noted.", "cat": "structure"},
-        {"keywords": ["FIRE DAMAGE", "CHARRED", "SCORCH", "BURNING"], "deduction": 30, "msg": "Structural Risk: Evidence of past fire/burning.", "cat": "fire"},
-        {"keywords": ["WATER DAMAGE", "LEAK", "MOLD", "FUNGAL"], "deduction": 20, "msg": "Health Risk: History of water intrusion or mold.", "cat": "water"},
-        {"keywords": ["REMEDIATION", "ASBESTOS", "LEAD PAINT"], "deduction": 10, "msg": "Toxic Material: History of hazmat remediation.", "cat": "health"},
-        {"keywords": ["NOV ", "NOTICE OF VIOLATION", "ABATEMENT"], "deduction": 25, "msg": "Legal Risk: Property has received City Violations.", "cat": "legal"},
-        {"keywords": ["SOLAR", "LEASE", "PPA", "SUNRUN", "TESLA"], "match_all": True, "deduction": 15, "msg": "Financial Encumbrance: Solar Lease detected.", "cat": "finance"},
+        {
+            "keywords": ["KNOB", "TUBE"],
+            "deduction": 25,
+            "msg": "Major Electrical Risk: Knob & Tube Wiring detected.",
+            "cat": "fire"
+        },
+        {
+            "keywords": ["ALUMINUM WIRING"],
+            "deduction": 15,
+            "msg": "Fire Risk: Aluminum branch wiring detected.",
+            "cat": "fire"
+        },
+        {
+            "keywords": ["UNPERMITTED", "ILLEGAL WIRING"],
+            "deduction": 20,
+            "msg": "Compliance Risk: History of unpermitted work.",
+            "cat": "legal"
+        },
+        {
+            "keywords": ["UNDERPIN", "SHORING", "FOUNDATION"],
+            "deduction": 30,
+            "msg": "Major Structural Risk: Foundation movement detected.",
+            "cat": "structure"
+        },
+        {
+            "keywords": ["SISTERING", "JOIST", "DRY ROT", "TERMITE"],
+            "deduction": 15,
+            "msg": "Structural Decay: Frame damage (rot/termites) noted.",
+            "cat": "structure"
+        },
+        {
+            "keywords": ["FIRE DAMAGE", "CHARRED", "SCORCH", "BURNING"],
+            "deduction": 30,
+            "msg": "Structural Risk: Evidence of past fire/burning.",
+            "cat": "fire"
+        },
+        {
+            "keywords": ["WATER DAMAGE", "LEAK", "MOLD", "FUNGAL"],
+            "deduction": 20,
+            "msg": "Health Risk: History of water intrusion or mold.",
+            "cat": "water"
+        },
+        {
+            "keywords": ["REMEDIATION", "ASBESTOS", "LEAD PAINT"],
+            "deduction": 10,
+            "msg": "Toxic Material: History of hazmat remediation.",
+            "cat": "health"
+        },
+        {
+            "keywords": ["NOV ", "NOTICE OF VIOLATION", "ABATEMENT"],
+            "deduction": 25,
+            "msg": "Legal Risk: Property has received City Violations.",
+            "cat": "legal"
+        },
+        {
+            "keywords": ["SOLAR", "LEASE", "PPA", "SUNRUN"],
+            "match_all": True,
+            "deduction": 15,
+            "msg": "Financial Encumbrance: Solar Lease detected.",
+            "cat": "finance"
+        }
     ]
     
+    # ASSET DICTIONARY
     assets = [
-        {"keywords": ["REROOF", "RE-ROOF", "NEW ROOF"], "msg":
+        {
+            "keywords": ["REROOF", "RE-ROOF", "NEW ROOF"], 
+            "msg": "Capital Improvement: Roof replaced recently."
+        },
+        {
+            "keywords": ["SEISMIC", "RETROFIT", "BOLT"], 
+            "msg": "Safety Asset: Seismic retrofitting completed."
+        },
+        {
+            "keywords": ["COPPER", "REPIPE"], 
+            "msg": "Plumbing Asset: Copper repiping detected."
+        },
+        {
+            "keywords": ["100 AMP", "200 AMP", "PANEL UPGRADE"], 
+            "msg": "Electrical Asset: Main service panel upgraded."
+        }
+    ]
+
+    for p in permits:
+        desc = str(p.get('description', '')).upper()
+        date = p.get('permit_creation_date', 'N/A')[:4]
+        
+        for risk in risk_map:
+            if risk.get("match_all"):
+                if "SOLAR" in desc and any(term in desc for term in ["LEASE", "PPA"]):
+                    score -= risk["deduction"]
+                    findings.append({"type": "risk", "msg": f"{risk['msg']} ({date})", "cat": risk['cat']})
+            elif any(k in desc for k in risk["keywords"]):
+                # Safety check for "burning" stoves vs actual fire
+                if "BURNING" in desc and any(safe in desc for safe in ["STOVE", "INSERT", "LOG"]): 
+                    continue
+                score -= risk["deduction"]
+                findings.append({"type": "risk", "msg": f"{risk['msg']} ({date})", "cat": risk['cat']})
+        
+        for asset in assets:
+             if any(k in desc for k in asset["keywords"]):
+                 findings.append({"type": "safe", "msg": f"{asset['msg']} ({date})"})
+
+    return max(score, 0), findings
+
+def get_property_details(number, street, key):
+    if not key: return None
+    url = "https://api.rentcast.io/v1/properties"
+    try:
+        r = requests.get(url, headers={'X-Api-Key': key}, params={'address': f"{number} {street}, San Francisco, CA"})
+        data = r.json()
+        if isinstance(data, list) and len(data) > 0: return data[0]
+    except: return None
+    return None
+
+def predict_maintenance(age_year, permits):
+    preds = []
+    text = " ".join([str(p.get('description', '')).upper() for p in permits])
