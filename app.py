@@ -50,20 +50,28 @@ st.markdown("<h1 style='text-align: center;'>VeriHouse Property Audit</h1>", uns
 st.markdown("<p style='text-align: center; color: #666;'>Forensic Analysis + Predictive Maintenance + Listing Truth Check</p>", unsafe_allow_html=True)
 st.write("")
 
+# --- INITIALIZE SESSION STATE ---
+# This acts as the app's "Short Term Memory"
+if 'data_loaded' not in st.session_state:
+    st.session_state.data_loaded = False
+    st.session_state.house_permits = []
+    st.session_state.rc_data = None
+    st.session_state.current_address = ""
+
 col1, col2, col3 = st.columns([1, 2, 1])
 with col2:
     with st.container():
         c1, c2 = st.columns(2)
+        # Use session state values for inputs if they exist, or default
         st_num = c1.text_input("Street Number", value="301")
         st_name = c2.text_input("Street Name", value="Mission") 
         run_btn = st.button("Generate Full Audit", type="primary", use_container_width=True)
 
-# --- 5. ENGINE A: FORENSIC RISK ---
+# --- 5. ENGINE FUNCTIONS ---
 def analyze_risks(permits):
     score = 100
     findings = []
     
-    # FORENSIC DICTIONARY
     risk_map = [
         {"keywords": ["KNOB", "TUBE"], "deduction": 25, "msg": "Major Electrical Risk: Knob & Tube Wiring detected.", "cat": "fire"},
         {"keywords": ["ALUMINUM WIRING"], "deduction": 15, "msg": "Fire Risk: Aluminum branch wiring detected.", "cat": "fire"},
@@ -87,8 +95,6 @@ def analyze_risks(permits):
     for p in permits:
         desc = str(p.get('description', '')).upper()
         date = p.get('permit_creation_date', 'N/A')[:4]
-        
-        # Risks
         for risk in risk_map:
             if risk.get("match_all"):
                 if "SOLAR" in desc and any(term in desc for term in ["LEASE", "PPA"]):
@@ -98,15 +104,11 @@ def analyze_risks(permits):
                 if "BURNING" in desc and any(safe in desc for safe in ["STOVE", "INSERT", "LOG"]): continue
                 score -= risk["deduction"]
                 findings.append({"type": "risk", "msg": f"{risk['msg']} ({date})", "cat": risk['cat']})
-        
-        # Assets
         for asset in assets:
              if any(k in desc for k in asset["keywords"]):
                  findings.append({"type": "safe", "msg": f"{asset['msg']} ({date})"})
-
     return max(score, 0), findings
 
-# --- 6. ENGINE B: RENTCAST & PREDICTION ---
 def get_property_details(number, street, api_key):
     if not api_key: return None
     url = "https://api.rentcast.io/v1/properties"
@@ -123,7 +125,6 @@ def get_property_details(number, street, api_key):
 def predict_maintenance(age_year, permits):
     predictions = []
     current_year = datetime.datetime.now().year
-    
     all_desc = " ".join([str(p.get('description', '')).upper() for p in permits])
     
     if age_year < 1960:
@@ -149,11 +150,9 @@ def predict_maintenance(age_year, permits):
 
     return predictions
 
-# --- 7. NEW ENGINE C: MLS TRUTH CHECKER ---
 def check_listing_claims(listing_text, permits):
     text = listing_text.upper()
     discrepancies = []
-    all_desc = " ".join([str(p.get('description', '')).upper() for p in permits])
     current_year = datetime.datetime.now().year
     
     # Check 1: KITCHEN
@@ -201,7 +200,7 @@ def check_listing_claims(listing_text, permits):
                 "msg": "Listing claims 'New Roof', but no roofing permits found in the last 10 years."
             })
 
-    # Check 4: ADU / IN-LAW
+    # Check 4: ADU
     if any(x in text for x in ["ADU", "IN-LAW", "GUEST UNIT", "LEGAL UNIT"]):
         has_adu = False
         for p in permits:
@@ -217,7 +216,7 @@ def check_listing_claims(listing_text, permits):
 
     return discrepancies
 
-# --- 8. EXECUTION LOGIC ---
+# --- 6. DATA FETCHING LOGIC (Run only when button is clicked) ---
 if run_btn:
     with st.spinner(f"Running comprehensive audit for {st_num} {st_name}..."):
         
@@ -239,75 +238,86 @@ if run_btn:
 
         rc_data = get_property_details(clean_num, clean_name, rentcast_key)
         
-        # --- DISPLAY MAIN REPORT ---
-        if len(house_permits) > 0:
-            final_score, notes = analyze_risks(house_permits)
-            
-            # Tier Logic
-            if final_score >= 90: tier = "PLATINUM"
-            elif final_score >= 80: tier = "GOLD"
-            elif final_score >= 70: tier = "SILVER"
-            else: tier = "STANDARD"
-            
-            st.divider()
-            m1, m2, m3 = st.columns(3)
-            with m1: st.markdown(f"<div class='score-card'><div class='metric-label'>VeriHouse Score</div><div class='metric-value'>{final_score}</div></div>", unsafe_allow_html=True)
-            with m2: st.markdown(f"<div class='score-card'><div class='metric-label'>Asset Tier</div><div class='metric-value'>{tier}</div></div>", unsafe_allow_html=True)
-            with m3: 
-                age = rc_data.get('yearBuilt', 'N/A') if rc_data else len(house_permits)
-                label = "Year Built" if rc_data else "Permits Found"
-                st.markdown(f"<div class='score-card'><div class='metric-label'>{label}</div><div class='metric-value'>{age}</div></div>", unsafe_allow_html=True)
+        # SAVE TO SESSION STATE
+        st.session_state.house_permits = house_permits
+        st.session_state.rc_data = rc_data
+        st.session_state.data_loaded = True
+        st.session_state.current_address = f"{clean_num} {clean_name}"
 
+# --- 7. DISPLAY LOGIC (Run whenever data exists in memory) ---
+if st.session_state.data_loaded:
+    
+    house_permits = st.session_state.house_permits
+    rc_data = st.session_state.rc_data
+    
+    if len(house_permits) > 0:
+        final_score, notes = analyze_risks(house_permits)
+        
+        # Tier Logic
+        if final_score >= 90: tier = "PLATINUM"
+        elif final_score >= 80: tier = "GOLD"
+        elif final_score >= 70: tier = "SILVER"
+        else: tier = "STANDARD"
+        
+        st.divider()
+        m1, m2, m3 = st.columns(3)
+        with m1: st.markdown(f"<div class='score-card'><div class='metric-label'>VeriHouse Score</div><div class='metric-value'>{final_score}</div></div>", unsafe_allow_html=True)
+        with m2: st.markdown(f"<div class='score-card'><div class='metric-label'>Asset Tier</div><div class='metric-value'>{tier}</div></div>", unsafe_allow_html=True)
+        with m3: 
+            age = rc_data.get('yearBuilt', 'N/A') if rc_data else len(house_permits)
+            label = "Year Built" if rc_data else "Permits Found"
+            st.markdown(f"<div class='score-card'><div class='metric-label'>{label}</div><div class='metric-value'>{age}</div></div>", unsafe_allow_html=True)
+
+        st.write("")
+        
+        # SECTION 1: FORENSICS
+        st.subheader("📋 Forensic Verification Log")
+        notes.sort(key=lambda x: x['type']) 
+        if not notes: st.success("No significant risk keywords found.")
+        for note in notes:
+            if note['type'] == 'risk':
+                st.markdown(f"<div style='margin-bottom:10px;'><span class='badge-risk'>⚠ {note['cat'].upper()} RISK</span> &nbsp; {note['msg']}</div>", unsafe_allow_html=True)
+            elif note['type'] == 'safe':
+                st.markdown(f"<div style='margin-bottom:10px;'><span class='badge-safe'>✓ VERIFIED</span> &nbsp; {note['msg']}</div>", unsafe_allow_html=True)
+
+        # SECTION 2: PREDICTIVE
+        if rc_data:
             st.write("")
+            st.subheader("🔮 Predictive Maintenance")
+            preds = predict_maintenance(rc_data.get('yearBuilt', 0), house_permits)
+            if not preds: st.info("No deferred maintenance anomalies predicted.")
+            for p in preds:
+                border = "#fca5a5" if p['prob'] == "HIGH" else "#fcd34d"
+                bg = "#fef2f2" if p['prob'] == "HIGH" else "#fffbeb"
+                st.markdown(f"""<div style="background-color: {bg}; padding: 10px; border-radius: 5px; margin-bottom: 8px; border-left: 5px solid {border};">
+                    <strong>{p['item']}</strong> ({p['cost']})<br><span style='font-size:0.9em; color:#666'>{p['reason']}</span></div>""", unsafe_allow_html=True)
+
+        # SECTION 3: MLS CROSS-CHECK
+        st.write("")
+        st.divider()
+        st.subheader("🕵️ Listing Truth Check")
+        st.markdown("Paste the MLS description below to cross-reference marketing claims against city data.")
+        
+        with st.form("mls_checker"):
+            mls_text = st.text_area("Paste Listing Description Here (from Zillow/Redfin)", height=100, placeholder="Example: Stunning remodel with brand new chef's kitchen, new roof, and legal ADU unit downstairs...")
+            check_mls = st.form_submit_button("Analyze Listing Claims")
             
-            # SECTION 1: FORENSICS
-            st.subheader("📋 Forensic Verification Log")
-            notes.sort(key=lambda x: x['type']) 
-            if not notes: st.success("No significant risk keywords found.")
-            for note in notes:
-                if note['type'] == 'risk':
-                    st.markdown(f"<div style='margin-bottom:10px;'><span class='badge-risk'>⚠ {note['cat'].upper()} RISK</span> &nbsp; {note['msg']}</div>", unsafe_allow_html=True)
-                elif note['type'] == 'safe':
-                    st.markdown(f"<div style='margin-bottom:10px;'><span class='badge-safe'>✓ VERIFIED</span> &nbsp; {note['msg']}</div>", unsafe_allow_html=True)
+            if check_mls and mls_text:
+                discrepancies = check_listing_claims(mls_text, house_permits)
+                if len(discrepancies) > 0:
+                    st.error(f"🚩 Found {len(discrepancies)} Potential Discrepancies")
+                    for d in discrepancies:
+                        st.markdown(f"""
+                        <div style='background-color: #fff1f2; padding: 15px; border-radius: 8px; margin-bottom: 10px; border: 1px solid #fda4af;'>
+                            <strong style='color:#be123c;'>CLAIM: "{d['claim']}"</strong>
+                            <br>{d['msg']}
+                        </div>
+                        """, unsafe_allow_html=True)
+                else:
+                    st.success("✅ No obvious contradictions found between listing claims and permit history.")
 
-            # SECTION 2: PREDICTIVE
-            if rc_data:
-                st.write("")
-                st.subheader("🔮 Predictive Maintenance")
-                preds = predict_maintenance(rc_data.get('yearBuilt', 0), house_permits)
-                if not preds: st.info("No deferred maintenance anomalies predicted.")
-                for p in preds:
-                    border = "#fca5a5" if p['prob'] == "HIGH" else "#fcd34d"
-                    bg = "#fef2f2" if p['prob'] == "HIGH" else "#fffbeb"
-                    st.markdown(f"""<div style="background-color: {bg}; padding: 10px; border-radius: 5px; margin-bottom: 8px; border-left: 5px solid {border};">
-                        <strong>{p['item']}</strong> ({p['cost']})<br><span style='font-size:0.9em; color:#666'>{p['reason']}</span></div>""", unsafe_allow_html=True)
+        with st.expander("View Raw Permit Data"):
+            st.dataframe(house_permits)
 
-            # SECTION 3: MLS CROSS-CHECK (NEW!)
-            st.write("")
-            st.divider()
-            st.subheader("🕵️ Listing Truth Check")
-            st.markdown("Paste the MLS description below to cross-reference marketing claims against city data.")
-            
-            with st.form("mls_checker"):
-                mls_text = st.text_area("Paste Listing Description Here (from Zillow/Redfin)", height=100, placeholder="Example: Stunning remodel with brand new chef's kitchen, new roof, and legal ADU unit downstairs...")
-                check_mls = st.form_submit_button("Analyze Listing Claims")
-                
-                if check_mls and mls_text:
-                    discrepancies = check_listing_claims(mls_text, house_permits)
-                    if len(discrepancies) > 0:
-                        st.error(f"🚩 Found {len(discrepancies)} Potential Discrepancies")
-                        for d in discrepancies:
-                            st.markdown(f"""
-                            <div style='background-color: #fff1f2; padding: 15px; border-radius: 8px; margin-bottom: 10px; border: 1px solid #fda4af;'>
-                                <strong style='color:#be123c;'>CLAIM: "{d['claim']}"</strong>
-                                <br>{d['msg']}
-                            </div>
-                            """, unsafe_allow_html=True)
-                    else:
-                        st.success("✅ No obvious contradictions found between listing claims and permit history.")
-
-            with st.expander("View Raw Permit Data"):
-                st.dataframe(house_permits)
-
-        else:
-            st.warning(f"No permits found for {st_num} {st_name}.")
+    else:
+        st.warning(f"No permits found for {st.session_state.current_address}.")
