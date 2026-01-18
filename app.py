@@ -9,7 +9,7 @@ except FileNotFoundError:
     st.error("Secrets file not found. Please create .streamlit/secrets.toml")
     st.stop()
 except KeyError:
-    st.error("Key 'rentcast_key' not found in secrets.toml")
+    st.error("Key 'rentcast_key' not found in secrets.toml. Please check the spelling in your file.")
     st.stop()
 
 # --- PAGE SETUP ---
@@ -57,7 +57,7 @@ if st.button("Generate Full Audit", type="primary"):
                 # This is the actual call to RentCast
                 response = requests.get(url, headers=headers, params=params)
                 
-                # --- THE FIX IS ON THE LINE BELOW ---
+                # --- THIS IS THE FIXED LINE (status_code instead of status_status) ---
                 if response.status_code == 200:
                     data = response.json()
                     st.success(f"Audit Complete for {full_address}!")
@@ -72,8 +72,8 @@ if st.button("Generate Full Audit", type="primary"):
                         m2.metric("Sq Ft", property_info.get("squareFootage", "N/A"))
                         m3.metric("Property Type", property_info.get("propertyType", "N/A"))
                         
-                        # Show raw data (optional, helpful for debugging)
-                        # st.json(property_info)
+                        # Display raw data below for verification
+                        st.json(property_info)
                     else:
                         st.warning("No data found for this specific address.")
                 
