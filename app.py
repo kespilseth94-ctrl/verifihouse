@@ -62,4 +62,23 @@ if st.button("Generate Full Audit", type="primary"):
                     data = response.json()
                     st.success(f"Audit Complete for {full_address}!")
                     
-                    # This shows the actual house data (Year Built, Square Feet, etc
+                    # This shows the actual house data (Year Built, Square Feet, etc.)
+                    if data:
+                        property_info = data[0] # RentCast returns a list
+                        # st.json(property_info) # Uncomment if you want to see raw data
+                        
+                        # Update your dashboard metrics with real data
+                        m1, m2, m3 = st.columns(3)
+                        m1.metric("Year Built", property_info.get("yearBuilt", "N/A"))
+                        m2.metric("Sq Ft", property_info.get("squareFootage", "N/A"))
+                        m3.metric("Property Type", property_info.get("propertyType", "N/A"))
+                    else:
+                        st.warning("No data found for this specific address.")
+                
+                elif response.status_code == 401:
+                    st.error("RentCast Error: Invalid API Key. Please check your secrets.toml file.")
+                else:
+                    st.error(f"RentCast Error: {response.status_code} - {response.text}")
+
+            except Exception as e:
+                st.error(f"Connection Error: {e}")
