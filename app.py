@@ -2,8 +2,7 @@ import streamlit as st
 import requests
 
 # --- INITIALIZATION ---
-# This line grabs the key securely from your .streamlit/secrets.toml file
-# You do NOT need to paste the key here anymore.
+# This grabs the key securely from your .streamlit/secrets.toml file
 try:
     api_key = st.secrets["rentcast_key"]
 except FileNotFoundError:
@@ -58,20 +57,23 @@ if st.button("Generate Full Audit", type="primary"):
                 # This is the actual call to RentCast
                 response = requests.get(url, headers=headers, params=params)
                 
+                # --- THE FIX IS ON THE LINE BELOW ---
                 if response.status_code == 200:
                     data = response.json()
                     st.success(f"Audit Complete for {full_address}!")
                     
-                    # This shows the actual house data (Year Built, Square Feet, etc.)
+                    # This shows the actual house data
                     if data:
                         property_info = data[0] # RentCast returns a list
-                        # st.json(property_info) # Uncomment if you want to see raw data
                         
                         # Update your dashboard metrics with real data
                         m1, m2, m3 = st.columns(3)
                         m1.metric("Year Built", property_info.get("yearBuilt", "N/A"))
                         m2.metric("Sq Ft", property_info.get("squareFootage", "N/A"))
                         m3.metric("Property Type", property_info.get("propertyType", "N/A"))
+                        
+                        # Show raw data (optional, helpful for debugging)
+                        # st.json(property_info)
                     else:
                         st.warning("No data found for this specific address.")
                 
