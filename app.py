@@ -24,9 +24,8 @@ with st.sidebar:
     st.divider()
     st.success("System Online 🟢")
     st.caption("Coverage: San Francisco, CA")
-    st.caption("v2.0 restored")
+    st.caption("v2.1 Final")
     
-    # --- RESTORED DISCLAIMER ---
     st.divider()
     st.warning("""
     **Disclaimer:**
@@ -43,29 +42,33 @@ def fetch_rentcast_data(address_full):
     params = {"address": address_full}
     headers = {"accept": "application/json", "X-Api-Key": rentcast_key}
     
-    response = requests.get(url, headers=headers, params=params)
-    if response.status_code == 200:
-        data = response.json()
-        return data[0] if data else None
+    try:
+        response = requests.get(url, headers=headers, params=params)
+        if response.status_code == 200:
+            data = response.json()
+            return data[0] if data else None
+    except Exception as e:
+        st.error(f"RentCast Connection Error: {e}")
     return None
 
 def fetch_sf_permits(street_num, street_name):
     """
-    Queries DataSF (Socrata API) for permits at this address.
-    No API key required for basic queries.
+    Queries DataSF with 'Fuzzy Search' logic.
+    Catches '301-305 Mission' even if input is just '301'.
     """
-    # San Francisco Open Data Endpoint for Building Permits
     url = "https://data.sfgov.org/resource/i98e-djp9.json"
     
-    # Query for exact address match
-    # We use a SQL-like query (SoQL)
-    street_name_upper = street_name.upper()
-    query = f"street_number='{street_number}' AND street_name like '%{street_name_upper}%'"
+    # Clean inputs and create flexible search terms
+    street_name_upper = street_name.upper().strip().replace(" STREET", "").replace(" ST", "").replace(" AVE", "")
+    street_num = street_num.strip()
+    
+    # The "Fuzzy" Query: Uses 'like' to find partial matches
+    query = f"street_number like '%{street_num}%' AND street_name like '%{street_name_upper}%'"
     
     params = {
         "$where": query,
         "$order": "filed_date DESC",
-        "$limit": 20
+        "$limit": 50
     }
     
     try:
@@ -99,7 +102,7 @@ def run_comparative_engine(rentcast_data, permits):
             
     # 3. GENERATE RISKS (The Logic)
     
-    # Risk A: Old Home, No Recent Work (Deferred Maintenance)
+    # Risk A: Old Home, No Recent Work
     if age > 40 and not has_recent_permit:
         risks.append({
             "type": "STRUCTURAL",
@@ -163,7 +166,7 @@ if st.button("Generate Full Audit", type="primary"):
                 base_score -= (len(detected_risks) * 15)
                 m4.metric("VeriHouse Score", base_score)
 
-                # 4. FORENSIC LOG (The Risk Engine Output)
+                # 4. FORENSIC LOG
                 st.subheader("📋 Forensic Log")
                 if detected_risks:
                     for risk in detected_risks:
@@ -180,11 +183,10 @@ if st.button("Generate Full Audit", type="primary"):
                     # Clean up data for display
                     df = pd.DataFrame(sf_data)
                     display_cols = ['filed_date', 'permit_number', 'description', 'status', 'cost']
-                    # Only show cols that actually exist in the data
                     final_cols = [c for c in display_cols if c in df.columns]
                     st.dataframe(df[final_cols], use_container_width=True)
                 else:
-                    st.info("No permit history found in San Francisco Open Data.")
+                    st.info(f"No permit history found matching '{street_number} {street_name}' in SF database.")
 
                 # 6. RENTCAST RAW DATA (Optional)
                 with st.expander("View Raw Property Data"):
