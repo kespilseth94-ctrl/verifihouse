@@ -31,6 +31,19 @@ CITIES = {
         "default_number": "4149",
         "default_street": "Aldrich Ave S",
     },
+    "Saint Paul, MN": {
+        "rentcast_city": "Saint Paul",
+        "rentcast_state": "MN",
+        "default_number": "1080",
+        "default_street": "Montreal Ave",
+        # Note: Saint Paul migrated to PAULIE system (Sept 2025).
+        # The Socrata dataset covers permits from 2013 through mid-2025.
+        # Very recent permits (post-July 2025) may not yet appear here.
+        "data_notice": (
+            "⚠️ Saint Paul migrated to a new permit system (PAULIE) in Sept 2025. "
+            "This data covers 2013–mid-2025. Very recent permits may not appear."
+        ),
+    },
 }
 
 # --- 3. INITIALIZE STATE ---
@@ -153,12 +166,68 @@ def get_minneapolis_data(number, street):
         return []
 
 
+def get_saint_paul_data(number, street):
+    """
+    Saint Paul: Socrata API (information.stpaul.gov)
+    Dataset: Approved Building Permits (j8ip-eytd), covering 2013 to mid-2025.
+    Note: Saint Paul launched PAULIE (new permit system) in Sept 2025, replacing
+    legacy ECLIPS/AMANDA. Very recent permits may not yet appear in this dataset.
+
+    Field names confirmed from dataset schema:
+      address          -> full address string used for lookup
+      work_description -> description of work (maps to 'description')
+      issue_date       -> permit issue date (ISO string)
+      permit_type      -> permit category
+      status           -> permit status
+      permit_number    -> unique permit ID
+    """
+    clean_num = str(number).strip()
+    clean_street = str(street).strip().upper()
+
+    url = "https://information.stpaul.gov/resource/j8ip-eytd.json"
+
+    # Try SoQL LIKE query for address matching
+    params = {
+        '$where': f"address LIKE '{clean_num} {clean_street}%'",
+        '$limit': 2000,
+        '$order': 'issue_date DESC',
+    }
+
+    try:
+        r = requests.get(url, params=params, timeout=10)
+        data = r.json()
+
+        if not isinstance(data, list):
+            return []
+
+        normalized = []
+        for p in data:
+            # work_description is the primary field; fall back to description
+            desc = p.get('work_description') or p.get('description') or ''
+            normalized.append({
+                'description':          desc,
+                'permit_creation_date': (p.get('issue_date', '') or '')[:10],
+                'permit_type':          p.get('permit_type', '') or '',
+                'status':               p.get('status', '') or '',
+                'permit_number':        str(p.get('permit_number', '') or ''),
+                'address_display':      p.get('address', '') or '',
+                '_raw':                 p,
+            })
+        return normalized
+
+    except Exception as e:
+        st.warning(f"Saint Paul API error: {e}")
+        return []
+
+
 def fetch_permits(city_name, number, street):
     """Router: calls the right city fetch function."""
     if city_name == "San Francisco, CA":
         return get_sf_data(number, street)
     elif city_name == "Minneapolis, MN":
         return get_minneapolis_data(number, street)
+    elif city_name == "Saint Paul, MN":
+        return get_saint_paul_data(number, street)
     else:
         return []
 
@@ -319,8 +388,8 @@ def predict_future(age, permits, city_name=""):
             "why": "No roof permits found in last 20 years."
         })
 
-    # Minneapolis-specific: EIFS/stucco exterior insurance cliff
-    if city_name == "Minneapolis, MN":
+    # Minneapolis/Saint Paul: EIFS/stucco exterior insurance cliff (same MN market)
+    if city_name in ("Minneapolis, MN", "Saint Paul, MN"):
         if "STUCCO" in text or "EIFS" in text:
             stucco_repaired = any(
                 kw in text for kw in ["RESIDE", "MOISTURE BARRIER", "WATER MANAGEMENT"]
@@ -391,6 +460,10 @@ with c2:
     col_a, col_b = st.columns(2)
     s_num  = col_a.text_input("Street Number", value=city_cfg["default_number"])
     s_name = col_b.text_input("Street Name",   value=city_cfg["default_street"])
+
+    # Show data coverage notice for cities with known limitations
+    if city_cfg.get("data_notice"):
+        st.info(city_cfg["data_notice"])
 
     if st.button("Generate Full Audit", type="primary", use_container_width=True):
         with st.spinner("Analyzing..."):
