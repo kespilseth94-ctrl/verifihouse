@@ -1,10 +1,10 @@
 import streamlit as st
 import requests
 import datetime
-
+ 
 # --- 1. CONFIGURATION ---
 st.set_page_config(page_title="VerifiHouse", page_icon="🛡️", layout="wide")
-
+ 
 st.markdown("""
     <style>
     .score-card { padding: 20px; border-radius: 10px; background-color: #f8f9fa; border: 1px solid #e9ecef; text-align: center; }
@@ -14,7 +14,7 @@ st.markdown("""
     .badge-safe { background-color: #d1fae5; color: #065f46; padding: 4px 10px; border-radius: 15px; font-size: 0.8em; font-weight: bold; }
     </style>
 """, unsafe_allow_html=True)
-
+ 
 # --- 2. CITY CONFIG ---
 # Each city entry defines how to fetch and normalize permit data.
 # To add a new city: add an entry here and a get_<city>_data() function below.
@@ -45,7 +45,7 @@ CITIES = {
         ),
     },
 }
-
+ 
 # --- 3. INITIALIZE STATE ---
 if 'house_permits' not in st.session_state:
     st.session_state.house_permits = []
@@ -55,9 +55,9 @@ if 'has_run' not in st.session_state:
     st.session_state.has_run = False
 if 'selected_city' not in st.session_state:
     st.session_state.selected_city = "San Francisco, CA"
-
+ 
 # --- 4. DATA FETCH FUNCTIONS ---
-
+ 
 def get_sf_data(number, street):
     """
     San Francisco: Socrata API (data.sfgov.org)
@@ -65,19 +65,19 @@ def get_sf_data(number, street):
     """
     clean_num = str(number).strip()
     clean_street = str(street).strip().title()
-
+ 
     url = "https://data.sfgov.org/resource/i98e-djp9.json"
     params = {
         'street_name': clean_street,
         '$limit': 2000,
         '$order': 'permit_creation_date DESC'
     }
-
+ 
     try:
         r = requests.get(url, params=params, timeout=10)
         data = r.json()
         raw = [p for p in data if clean_num in str(p.get('street_number', ''))]
-
+ 
         # Normalize to common schema
         normalized = []
         for p in raw:
@@ -93,14 +93,14 @@ def get_sf_data(number, street):
     except Exception as e:
         st.warning(f"SF API error: {e}")
         return []
-
-
+ 
+ 
 def get_minneapolis_data(number, street):
     """
     Minneapolis: ArcGIS REST API (City of Minneapolis CCS Permits)
     Endpoint: services.arcgis.com/.../CCS_Permits/FeatureServer/0/query
     Field mapping confirmed via live API test April 2026.
-
+ 
     Key fields:
       Display      -> full address string (used for matching)
       comments     -> work description (maps to 'description')
@@ -114,7 +114,7 @@ def get_minneapolis_data(number, street):
     clean_num = str(number).strip()
     clean_street = str(street).strip().upper()
     address_prefix = f"{clean_num} {clean_street}"
-
+ 
     url = (
         "https://services.arcgis.com/afSMGVsC7QlRK1kZ/arcgis/rest/services/"
         "CCS_Permits/FeatureServer/0/query"
@@ -126,16 +126,16 @@ def get_minneapolis_data(number, street):
         'resultRecordCount': 2000,
         'f':             'json',
     }
-
+ 
     try:
         r = requests.get(url, params=params, timeout=10)
         data = r.json()
         features = data.get('features', [])
-
+ 
         normalized = []
         for feat in features:
             attrs = feat.get('attributes', {})
-
+ 
             # Convert Unix ms timestamp to YYYY-MM-DD string
             issue_ms = attrs.get('issueDate')
             if issue_ms:
@@ -147,7 +147,7 @@ def get_minneapolis_data(number, street):
                     date_str = ''
             else:
                 date_str = ''
-
+ 
             normalized.append({
                 'description':          attrs.get('comments', '') or '',
                 'permit_creation_date': date_str,
@@ -160,66 +160,125 @@ def get_minneapolis_data(number, street):
                 '_raw':                 attrs,
             })
         return normalized
-
+ 
     except Exception as e:
         st.warning(f"Minneapolis API error: {e}")
         return []
-
-
+ 
+ 
 def get_saint_paul_data(number, street):
     """
     Saint Paul: Socrata API (information.stpaul.gov)
     Dataset: Approved Building Permits (j8ip-eytd), covering 2013 to mid-2025.
-    Note: Saint Paul launched PAULIE (new permit system) in Sept 2025, replacing
-    legacy ECLIPS/AMANDA. Very recent permits may not yet appear in this dataset.
-
-    Field names confirmed from dataset schema:
-      address          -> full address string used for lookup
-      work_description -> description of work (maps to 'description')
-      issue_date       -> permit issue date (ISO string)
-      permit_type      -> permit category
-      status           -> permit status
-      permit_number    -> unique permit ID
+ 
+    Strategy:
+      1. Fetch one sample record to auto-discover actual field names
+      2. Try multiple address query formats until we get results
+      3. Normalize whatever fields exist into the common schema
     """
     clean_num = str(number).strip()
     clean_street = str(street).strip().upper()
-
     url = "https://information.stpaul.gov/resource/j8ip-eytd.json"
-
-    # Try SoQL LIKE query for address matching
-    params = {
-        '$where': f"address LIKE '{clean_num} {clean_street}%'",
-        '$limit': 2000,
-        '$order': 'issue_date DESC',
-    }
-
+ 
     try:
-        r = requests.get(url, params=params, timeout=10)
-        data = r.json()
-
-        if not isinstance(data, list):
+        # --- Step 1: Discover field names from a sample record ---
+        sample_r = requests.get(url, params={'$limit': 1}, timeout=10)
+        sample = sample_r.json()
+        if not isinstance(sample, list) or len(sample) == 0:
+            st.warning("Saint Paul API returned no sample data.")
             return []
-
+ 
+        sample_record = sample[0]
+        available_fields = list(sample_record.keys())
+ 
+        # --- Step 2: Find the address field ---
+        # Common names Saint Paul / Socrata datasets use
+        addr_candidates = [
+            'address', 'site_address', 'property_address',
+            'permit_address', 'full_address', 'location_address',
+        ]
+        addr_field = next((f for f in addr_candidates if f in available_fields), None)
+ 
+        # --- Step 3: Find description / work description field ---
+        desc_candidates = [
+            'work_description', 'description', 'job_description',
+            'permit_description', 'scope_of_work', 'work_type',
+            'comments', 'notes',
+        ]
+        desc_field = next((f for f in desc_candidates if f in available_fields), None)
+ 
+        # --- Step 4: Find date field ---
+        date_candidates = [
+            'issue_date', 'issued_date', 'permit_date',
+            'permit_creation_date', 'application_date', 'date_issued',
+        ]
+        date_field = next((f for f in date_candidates if f in available_fields), None)
+ 
+        # --- Step 5: Find status / permit type / permit number fields ---
+        status_field  = next((f for f in ['status', 'permit_status', 'current_status'] if f in available_fields), None)
+        type_field    = next((f for f in ['permit_type', 'type', 'permit_type_description', 'work_class'] if f in available_fields), None)
+        number_field  = next((f for f in ['permit_number', 'permit_no', 'permit_num', 'permit_id', 'id'] if f in available_fields), None)
+ 
+        # --- Step 6: Try multiple address query formats ---
+        # Saint Paul may store as "591 FAIRVIEW AVE S" or "591 S FAIRVIEW AVE" etc.
+        queries_to_try = []
+        if addr_field:
+            queries_to_try = [
+                {f'$where': f"{addr_field} LIKE '{clean_num} {clean_street}%'"},
+                {f'$where': f"upper({addr_field}) LIKE '{clean_num} {clean_street}%'"},
+                {addr_field: f"{clean_num} {clean_street}"},
+                {f'$where': f"{addr_field} LIKE '{clean_num}%'"},
+            ]
+        else:
+            # No address field found — try generic full-text search
+            queries_to_try = [{'$q': f"{clean_num} {clean_street}"}]
+ 
+        data = []
+        used_query = None
+        for q in queries_to_try:
+            q['$limit'] = 2000
+            if date_field:
+                q['$order'] = f'{date_field} DESC'
+            try:
+                r = requests.get(url, params=q, timeout=10)
+                result = r.json()
+                if isinstance(result, list) and len(result) > 0:
+                    data = result
+                    used_query = q
+                    break
+            except Exception:
+                continue
+ 
+        # --- Debug info shown in expander so it doesn't clutter the UI ---
+        with st.expander("🔧 Saint Paul API Debug", expanded=(len(data) == 0)):
+            st.caption(f"Available fields: `{', '.join(available_fields)}`")
+            st.caption(f"Mapped → address:`{addr_field}` desc:`{desc_field}` date:`{date_field}` status:`{status_field}`")
+            st.caption(f"Records found: {len(data)} | Query used: `{used_query}`")
+ 
+        if not data:
+            return []
+ 
+        # --- Step 7: Normalize to common schema ---
         normalized = []
         for p in data:
-            # work_description is the primary field; fall back to description
-            desc = p.get('work_description') or p.get('description') or ''
+            desc = (p.get(desc_field, '') if desc_field else '') or ''
+            date = (p.get(date_field, '') if date_field else '') or ''
             normalized.append({
                 'description':          desc,
-                'permit_creation_date': (p.get('issue_date', '') or '')[:10],
-                'permit_type':          p.get('permit_type', '') or '',
-                'status':               p.get('status', '') or '',
-                'permit_number':        str(p.get('permit_number', '') or ''),
-                'address_display':      p.get('address', '') or '',
+                'permit_creation_date': str(date)[:10],
+                'permit_type':          (p.get(type_field, '') if type_field else '') or '',
+                'status':               (p.get(status_field, '') if status_field else '') or '',
+                'permit_number':        str((p.get(number_field, '') if number_field else '') or ''),
+                'address_display':      (p.get(addr_field, '') if addr_field else '') or '',
                 '_raw':                 p,
             })
         return normalized
-
+ 
     except Exception as e:
         st.warning(f"Saint Paul API error: {e}")
         return []
-
-
+ 
+ 
 def fetch_permits(city_name, number, street):
     """Router: calls the right city fetch function."""
     if city_name == "San Francisco, CA":
@@ -230,18 +289,18 @@ def fetch_permits(city_name, number, street):
         return get_saint_paul_data(number, street)
     else:
         return []
-
-
+ 
+ 
 def get_rentcast_data(number, street, city, state):
     try:
         key = st.secrets["rentcast_key"]
     except Exception:
         return None
-
+ 
     url = "https://api.rentcast.io/v1/properties"
     params = {'address': f"{number} {street}, {city}, {state}"}
     headers = {'X-Api-Key': key}
-
+ 
     try:
         r = requests.get(url, headers=headers, params=params, timeout=10)
         data = r.json()
@@ -250,14 +309,14 @@ def get_rentcast_data(number, street, city, state):
     except Exception:
         return None
     return None
-
-
+ 
+ 
 # --- 5. ANALYSIS FUNCTIONS ---
-
+ 
 def analyze_history(permits, city_name=""):
     score = 100
     log = []
-
+ 
     # Universal risk keywords
     risks = [
         {"k": ["KNOB", "TUBE"],              "d": 25, "c": "fire",      "m": "Major Electrical Risk: Knob & Tube Wiring."},
@@ -271,21 +330,21 @@ def analyze_history(permits, city_name=""):
         {"k": ["NOV ", "NOTICE OF VIOLATION"],       "d": 25, "c": "legal",  "m": "Legal Risk: City Violations found."},
         {"k": ["SOLAR", "LEASE", "PPA"],             "d": 15, "c": "finance","m": "Financial Encumbrance: Solar Lease."},
     ]
-
+ 
     for p in permits:
         desc = str(p.get('description', '')).upper()
         date = p.get('permit_creation_date', 'N/A')[:4]
-
+ 
         for r in risks:
             if any(k in desc for k in r['k']):
                 if "BURNING" in desc and "STOVE" in desc:
                     continue
                 score -= r['d']
                 log.append({"cat": r['c'], "msg": f"{r['m']} ({date})", "type": "risk"})
-
+ 
     # --- Minneapolis-specific Safety Gap checks ---
     if city_name == "Minneapolis, MN":
-
+ 
         # Pre-2015 deck check: any deck permit before 2015 = lateral load gap
         # MRC Section R507 (2015) mandated lateral load anchoring.
         deck_permits = [
@@ -327,7 +386,7 @@ def analyze_history(permits, city_name=""):
                     ),
                     "type": "risk",
                 })
-
+ 
         # Expired permit flag (Minneapolis often shows expired = uninspected work)
         expired = [
             p for p in permits
@@ -345,14 +404,14 @@ def analyze_history(permits, city_name=""):
                     ),
                     "type": "risk",
                 })
-
+ 
     return max(score, 0), log
-
-
+ 
+ 
 def predict_future(age, permits, city_name=""):
     preds = []
     text = " ".join([str(p.get('description', '')).upper() for p in permits])
-
+ 
     if age < 1960 and "REWIRE" not in text and "PANEL" not in text:
         preds.append({
             "item": "Full Rewire",
@@ -360,7 +419,7 @@ def predict_future(age, permits, city_name=""):
             "prob": "HIGH",
             "why": f"Built {age}, no rewiring found in permit history."
         })
-
+ 
     if age < 1975 and "COPPER" not in text and "REPIPE" not in text:
         preds.append({
             "item": "Galvanized Pipe Swap",
@@ -368,7 +427,7 @@ def predict_future(age, permits, city_name=""):
             "prob": "MEDIUM",
             "why": f"Built {age}, original pipes likely still in place."
         })
-
+ 
     # Roof check
     recent_roof = False
     current_year = datetime.datetime.now().year
@@ -379,7 +438,7 @@ def predict_future(age, permits, city_name=""):
                     recent_roof = True
             except Exception:
                 pass
-
+ 
     if not recent_roof:
         preds.append({
             "item": "Roof Replacement",
@@ -387,7 +446,7 @@ def predict_future(age, permits, city_name=""):
             "prob": "HIGH",
             "why": "No roof permits found in last 20 years."
         })
-
+ 
     # Minneapolis/Saint Paul: EIFS/stucco exterior insurance cliff (same MN market)
     if city_name in ("Minneapolis, MN", "Saint Paul, MN"):
         if "STUCCO" in text or "EIFS" in text:
@@ -404,15 +463,15 @@ def predict_future(age, permits, city_name=""):
                         "MN insurers increasingly declining EIFS coverage — renewal risk within 1–3 years."
                     )
                 })
-
+ 
     return preds
-
-
+ 
+ 
 def check_truth(claims, permits):
     claims = claims.upper()
     issues = []
     cy = datetime.datetime.now().year
-
+ 
     # Kitchen
     if any(x in claims for x in ["NEW KITCHEN", "REMODELED KITCHEN", "CHEF"]):
         found = any(
@@ -422,7 +481,7 @@ def check_truth(claims, permits):
         )
         if not found:
             issues.append("Claim: 'Remodeled Kitchen' — No recent kitchen permits found.")
-
+ 
     # Bath
     if any(x in claims for x in ["NEW BATH", "UPDATED BATH", "SPA-LIKE"]):
         found = any(
@@ -433,19 +492,19 @@ def check_truth(claims, permits):
         )
         if not found:
             issues.append("Claim: 'Updated Bathroom' — No recent bath permits found.")
-
+ 
     return issues
-
-
+ 
+ 
 # --- 6. SIDEBAR ---
 with st.sidebar:
     st.title("🛡️ VerifiHouse")
     st.info("System Online 🟢")
     st.caption("Beta — Minneapolis & San Francisco")
-
+ 
 # --- 7. MAIN UI ---
 st.markdown("<h1 style='text-align: center;'>VerifiHouse Property Audit</h1>", unsafe_allow_html=True)
-
+ 
 # City selector + address inputs
 c1, c2 = st.columns([1, 2])
 with c2:
@@ -456,15 +515,15 @@ with c2:
     )
     st.session_state.selected_city = selected_city
     city_cfg = CITIES[selected_city]
-
+ 
     col_a, col_b = st.columns(2)
     s_num  = col_a.text_input("Street Number", value=city_cfg["default_number"])
     s_name = col_b.text_input("Street Name",   value=city_cfg["default_street"])
-
+ 
     # Show data coverage notice for cities with known limitations
     if city_cfg.get("data_notice"):
         st.info(city_cfg["data_notice"])
-
+ 
     if st.button("Generate Full Audit", type="primary", use_container_width=True):
         with st.spinner("Analyzing..."):
             st.session_state.house_permits = fetch_permits(selected_city, s_num, s_name)
@@ -474,24 +533,24 @@ with c2:
                 city_cfg["rentcast_state"],
             )
             st.session_state.has_run = True
-
+ 
 # --- 8. RESULTS ---
 if st.session_state.has_run:
     permits = st.session_state.house_permits
     rc      = st.session_state.rc_data
     city    = st.session_state.selected_city
-
+ 
     if len(permits) > 0 or rc:
         score, findings = analyze_history(permits, city_name=city)
-
+ 
         # Tier logic
         if   score >= 90: tier = "PLATINUM"
         elif score >= 80: tier = "GOLD"
         elif score >= 70: tier = "SILVER"
         else:             tier = "STANDARD"
-
+ 
         st.divider()
-
+ 
         # Metrics row
         m1, m2, m3 = st.columns(3)
         m1.markdown(
@@ -504,7 +563,7 @@ if st.session_state.has_run:
             f"<div class='metric-value'>{tier}</div></div>",
             unsafe_allow_html=True
         )
-
+ 
         val = rc['yearBuilt'] if (rc and 'yearBuilt' in rc) else len(permits)
         lbl = "Year Built"   if (rc and 'yearBuilt' in rc) else "Permits Found"
         m3.markdown(
@@ -512,7 +571,7 @@ if st.session_state.has_run:
             f"<div class='metric-value'>{val}</div></div>",
             unsafe_allow_html=True
         )
-
+ 
         # Forensic log
         st.write("")
         st.subheader("📋 Forensic Log")
@@ -526,7 +585,7 @@ if st.session_state.has_run:
                     f"</div>",
                     unsafe_allow_html=True
                 )
-
+ 
         # Predictive maintenance (requires RentCast year built)
         if rc:
             st.write("")
@@ -551,7 +610,7 @@ if st.session_state.has_run:
                     "RentCast coverage may be limited for this address — "
                     "add year built manually to enable predictions."
                 )
-
+ 
         # Listing Truth Check
         st.write("")
         st.divider()
@@ -566,7 +625,7 @@ if st.session_state.has_run:
                         st.write(f"- {i}")
                 else:
                     st.success("Claims verified.")
-
+ 
         # Raw data expander
         with st.expander("Raw Permit Data"):
             display_cols = ['permit_creation_date', 'permit_type', 'description', 'status', 'permit_number']
@@ -578,10 +637,11 @@ if st.session_state.has_run:
                 st.dataframe(df, use_container_width=True)
             else:
                 st.json(permits)
-
+ 
     else:
         st.warning(
             "No permit data found for this address. "
             "Verify the street number and name, then try again. "
             "For Minneapolis, use all-caps street names (e.g. 'ALDRICH AVE S')."
         )
+ 
