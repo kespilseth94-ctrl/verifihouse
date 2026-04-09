@@ -40,8 +40,9 @@ CITIES = {
         # The Socrata dataset covers permits from 2013 through mid-2025.
         # Very recent permits (post-July 2025) may not yet appear here.
         "data_notice": (
-            "⚠️ Saint Paul migrated to a new permit system (PAULIE) in Sept 2025. "
-            "This data covers 2013–mid-2025. Very recent permits may not appear."
+            "⚠️ Saint Paul's open data API is offline (post-July 2025 security incident). "
+            "PAULIE (new system) completed its data migration April 2026 but has no public API yet. "
+            "RentCast property data and predictive analysis still work. Permit history requires manual lookup."
         ),
     },
 }
@@ -167,6 +168,35 @@ def get_minneapolis_data(number, street):
  
  
 def get_saint_paul_data(number, street):
+    """
+    Saint Paul permit data is currently in transition.
+ 
+    Timeline:
+    - July 2025: City suffered a digital security incident; old systems (ECLIPS/AMANDA)
+      taken offline. The old Socrata open data portal (j8ip-eytd) went dead.
+    - Sept 17, 2025: PAULIE launched as MVP — new permits only, no historical data yet.
+    - April 1–6, 2026: PAULIE taken offline for legacy data migration (20+ years of records).
+    - April 6, 2026: PAULIE came back online WITH historical data, but as a web portal
+      only — no public API or open data export exists yet.
+ 
+    Until Saint Paul publishes a new open data API, permit data must be looked up manually
+    at: https://online.stpaul.gov/stpaulportal (PAULIE public portal)
+    """
+    clean_num = str(number).strip()
+    clean_street = str(street).strip().upper()
+ 
+    st.info(
+        f"**Saint Paul permit data is transitioning to a new system (PAULIE).**\n\n"
+        f"Saint Paul's old open data API was taken offline after a July 2025 security "
+        f"incident. The new PAULIE system just completed a full data migration (April 2026) "
+        f"and now holds 20+ years of permit records — but a public API has not yet been "
+        f"published.\n\n"
+        f"**To look up permits for {clean_num} {clean_street} manually:**\n"
+        f"Visit [Saint Paul PAULIE Portal](https://online.stpaul.gov/stpaulportal) "
+        f"and search by address. The RentCast property data and predictive analysis below "
+        f"are still active based on year built."
+    )
+    return []
     """
     Saint Paul: Socrata API (information.stpaul.gov)
     Dataset: Approved Building Permits (j8ip-eytd), covering 2013 to mid-2025.
