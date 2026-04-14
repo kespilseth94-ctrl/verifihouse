@@ -125,7 +125,7 @@ CITIES = {
         "rentcast_state": "PA",
         "default_number": "125",
         "default_street": "North Highland Ave",
-        # WPRDC (CKAN/Socrata) PLI Permits dataset ghvd-y8vc. 2019-present.
+        # WPRDC CKAN API. Resource: f4d1177a. CONFIRMED LIVE April 2026.
         # Note: Building permits now called "Building & Development Application"
         # since June 2024 BDA system launch. Plumbing NOT included (Allegheny
         # County Health Dept handles separately).
@@ -1022,14 +1022,14 @@ def get_los_angeles_data(number, street):
 
     # Try with full prefix first, then just number
     for where_clause in [
-        f"PRIMARY_ADDRESS LIKE '{clean_num}%{clean_street}%'",
-        f"PRIMARY_ADDRESS LIKE '{clean_num} %{clean_street.split()[0] if clean_street else ''}%'",
+        f"primary_address LIKE '{clean_num}%{clean_street}%'",
+        f"primary_address LIKE '{clean_num} %{clean_street.split()[0] if clean_street else ''}%'",
     ]:
         try:
             params = {
                 "$where": where_clause,
                 "$limit": 2000,
-                "$order": "ISSUE_DATE DESC",
+                "$order": "issue_date DESC",
             }
             r = requests.get(url, params=params, timeout=10)
             data = r.json()
@@ -1039,27 +1039,21 @@ def get_los_angeles_data(number, street):
             normalized = []
             for p in data:
                 # ISSUE_DATE comes as "MM/DD/YYYY" — normalize to YYYY-MM-DD
-                raw_date = p.get("ISSUE_DATE", "") or p.get("issue_date", "") or ""
-                try:
-                    if raw_date and "/" in raw_date:
-                        parts = raw_date.split("/")
-                        date_str = f"{parts[2]}-{parts[0].zfill(2)}-{parts[1].zfill(2)}"
-                    else:
-                        date_str = raw_date[:10]
-                except Exception:
-                    date_str = raw_date[:10]
+                # LA API returns lowercase field names
+                raw_date = p.get("issue_date", "") or p.get("submitted_date", "") or ""
+                date_str = str(raw_date)[:10] if raw_date else ""
 
-                permit_type = p.get("PERMIT_TYPE", "") or p.get("permit_type", "") or ""
-                sub_type = p.get("PERMIT_SUB_TYPE", "") or p.get("permit_sub_type", "") or ""
+                permit_type = p.get("permit_type", "") or ""
+                sub_type = p.get("permit_sub_type", "") or ""
                 type_str = f"{permit_type} — {sub_type}" if sub_type else permit_type
 
                 normalized.append({
-                    "description":          p.get("WORK_DESC", "") or p.get("work_desc", "") or "",
+                    "description":          p.get("work_desc", "") or "",
                     "permit_creation_date": date_str,
                     "permit_type":          type_str,
-                    "status":               p.get("STATUS_DESC", "") or p.get("status_desc", "") or "",
-                    "permit_number":        str(p.get("PERMIT_NBR", "") or p.get("permit_nbr", "") or ""),
-                    "address_display":      p.get("PRIMARY_ADDRESS", "") or p.get("primary_address", "") or "",
+                    "status":               p.get("status_desc", "") or "",
+                    "permit_number":        str(p.get("permit_nbr", "") or ""),
+                    "address_display":      p.get("primary_address", "") or "",
                     "_raw":                 p,
                 })
             return normalized
@@ -1135,70 +1129,62 @@ def get_new_orleans_data(number, street):
 
 def get_pittsburgh_data(number, street):
     """
-    Pittsburgh: WPRDC Socrata API (data.wprdc.org)
-    Dataset: PLI Permits (ghvd-y8vc). 2019-present, from PLI dept.
+    Pittsburgh: WPRDC CKAN API (data.wprdc.org)
+    Dataset: PLI Permits. CONFIRMED LIVE April 2026 with 2026 data.
+    Resource ID: f4d1177a-f597-4c32-8cbf-7885f56253f6
 
-    Key fields (from WPRDC documentation):
-      address_number -> house number
-      street_name    -> street name
-      permit_type    -> e.g. "BUILDING", "ELECTRICAL", "Building & Development Application"
+    Key fields (confirmed from live test):
+      address          -> full address e.g. "125 N HIGHLAND AVE, Pittsburgh, PA 15206-"
       work_description -> description of work
-      issue_date     -> ISO date
-      status         -> permit status
-      neighborhood   -> Pittsburgh neighborhood name
+      work_type        -> type of work
+      permit_type      -> e.g. "BUILDING", "Building & Development Application"
+      issue_date       -> ISO date string e.g. "2026-03-31"
+      status           -> permit status
+      permit_id        -> unique permit ID
+      neighborhood     -> Pittsburgh neighborhood
 
-    Note: Since June 2024, building permits are filed as "Building & Development
-    Application" (BDA). Plumbing permits NOT included (Allegheny County handles those).
-    Uses self-healing field discovery as fallback.
+    Note: Since June 2024, building permits are "Building & Development Application".
+    Plumbing NOT included (Allegheny County Health Dept handles separately).
     """
     clean_num = str(number).strip()
     clean_street = str(street).strip().upper()
+    search_term = f"{clean_num} {clean_street.split()[0]}" if clean_street else clean_num
 
-    url = "https://data.wprdc.org/resource/ghvd-y8vc.json"
+    RESOURCE_ID = "f4d1177a-f597-4c32-8cbf-7885f56253f6"
+    CKAN_BASE = "https://data.wprdc.org/api/3/action/datastore_search"
 
-    # Try primary field structure first
-    queries = [
-        {"$where": f"address_number='{clean_num}' AND street_name LIKE '{clean_street.split()[0]}%'",
-         "$limit": 2000, "$order": "issue_date DESC"},
-        {"$where": f"address LIKE '{clean_num} {clean_street.split()[0]}%'",
-         "$limit": 2000, "$order": "issue_date DESC"},
-    ]
+    try:
+        r = requests.get(CKAN_BASE, params={
+            "resource_id": RESOURCE_ID,
+            "q": search_term,
+            "limit": 500,
+        }, timeout=10)
+        data = r.json()
+        if not data.get("success") or not data.get("result", {}).get("records"):
+            return []
 
-    for params in queries:
-        try:
-            r = requests.get(url, params=params, timeout=10)
-            data = r.json()
-            if not isinstance(data, list) or not data:
-                continue
-            if "error" in data[0] if data else False:
-                continue
+        records = data["result"]["records"]
+        # Filter to confirmed address prefix match
+        records = [rec for rec in records
+                   if str(rec.get("address", "")).upper().startswith(clean_num + " ")]
 
-            # Self-heal: discover actual field names from first record
-            sample = data[0]
-            fields = list(sample.keys())
-            addr_f  = next((f for f in fields if "address" in f.lower() and "number" not in f.lower()), None) or                       next((f for f in fields if "address" in f.lower()), None)
-            desc_f  = next((f for f in fields if "description" in f.lower() or "work" in f.lower()), None)
-            date_f  = next((f for f in fields if "issue" in f.lower() and "date" in f.lower()), None) or                       next((f for f in fields if "date" in f.lower()), None)
-            type_f  = next((f for f in fields if "permit_type" in f.lower() or "type" in f.lower()), None)
-            stat_f  = next((f for f in fields if "status" in f.lower()), None)
-            num_f   = next((f for f in fields if "permit" in f.lower() and ("num" in f.lower() or "id" in f.lower())), None)
+        normalized = []
+        for p in records:
+            desc = p.get("work_description", "") or p.get("work_type", "") or ""
+            normalized.append({
+                "description":          desc,
+                "permit_creation_date": str(p.get("issue_date", "") or "")[:10],
+                "permit_type":          p.get("permit_type", "") or "",
+                "status":               p.get("status", "") or "",
+                "permit_number":        str(p.get("permit_id", "") or ""),
+                "address_display":      p.get("address", "") or "",
+                "_raw":                 p,
+            })
+        return normalized
 
-            normalized = []
-            for p in data:
-                normalized.append({
-                    "description":          str(p.get(desc_f, "") or "") if desc_f else "",
-                    "permit_creation_date": str(p.get(date_f, "") or "")[:10] if date_f else "",
-                    "permit_type":          str(p.get(type_f, "") or "") if type_f else "",
-                    "status":               str(p.get(stat_f, "") or "") if stat_f else "",
-                    "permit_number":        str(p.get(num_f, "") or "") if num_f else "",
-                    "address_display":      str(p.get(addr_f, "") or "") if addr_f else f"{clean_num} {clean_street}",
-                    "_raw":                 p,
-                })
-            return normalized
-        except Exception:
-            continue
-
-    return []
+    except Exception as e:
+        st.warning(f"Pittsburgh API error: {e}")
+        return []
 
 
 def get_miami_data(number, street):
@@ -1940,10 +1926,29 @@ def check_truth(claims, permits):
 with st.sidebar:
     st.title("🛡️ VerifiHouse")
     st.info("System Online 🟢")
-    st.caption("Beta — Minneapolis & San Francisco")
+    st.caption("Beta — 20 U.S. Cities")
+    st.divider()
+    st.markdown("**⚠️ Disclaimer**")
+    st.markdown(
+        "VerifiHouse is an **informational research tool** only. "
+        "Permit data is sourced from public government APIs and may be incomplete, "
+        "delayed, or contain errors. This tool does **not** constitute a property "
+        "inspection, appraisal, or legal advice. Always consult a licensed "
+        "inspector, appraiser, or attorney before making real estate decisions. "
+        "VerifiHouse makes no representations about the accuracy or completeness "
+        "of the data presented."
+    )
+    st.divider()
+    st.caption("Data sources: City open data portals, RentCast API.")
+    st.caption("© 2026 VerifiHouse. All rights reserved.")
 
 # --- 7. MAIN UI ---
 st.markdown("<h1 style='text-align: center;'>VerifiHouse Property Audit</h1>", unsafe_allow_html=True)
+st.caption(
+    "⚠️ For informational purposes only. Permit data sourced from public government APIs "
+    "and may be incomplete or delayed. Not a substitute for a professional property inspection, "
+    "appraisal, or legal advice."
+)
 
 # City selector + address inputs
 c1, c2 = st.columns([1, 2])
@@ -2011,6 +2016,14 @@ if st.session_state.has_run:
             f"<div class='score-card'><div class='metric-label'>{lbl}</div>"
             f"<div class='metric-value'>{val}</div></div>",
             unsafe_allow_html=True
+        )
+
+        # Disclaimer under score cards
+        st.caption(
+            "⚠️ **Informational only.** This score is generated from public permit records "
+            "and automated analysis. It is not a professional inspection, appraisal, or legal opinion. "
+            "Data may be incomplete or delayed. Consult a licensed inspector before making "
+            "any real estate decision."
         )
 
         # Forensic log
