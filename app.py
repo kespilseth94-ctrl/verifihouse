@@ -1,6 +1,9 @@
 import streamlit as st
 import requests
 import datetime
+import io
+import zipfile
+import csv
 
 # --- 1. CONFIGURATION ---
 st.set_page_config(page_title="VerifiHouse", page_icon="🛡️", layout="wide")
@@ -18,6 +21,186 @@ st.markdown("""
 # --- 2. CITY CONFIG ---
 # Each city entry defines how to fetch and normalize permit data.
 # To add a new city: add an entry here and a get_<city>_data() function below.
+
+# --- MET COUNCIL RESIDENTIAL PERMIT DATA ---
+# Source: Metropolitan Council 7-county Twin Cities area, 2009–2024
+# Public CSV via MN Geospatial Commons (no token required from Streamlit servers)
+# Fields confirmed from metadata: CTU_NAME, YEAR, TOTALUNIT, SFUNIT, MFUNIT,
+#   CO_CODE, CTU_CODE (county/city FIPS codes)
+
+@st.cache_data(ttl=86400)  # Cache 24 hours — annual dataset, no need to refetch
+def get_metc_permit_data():
+    """
+    Downloads and parses the Met Council residential permits CSV.
+    Returns a dict keyed by (CTU_NAME, YEAR) -> {totalunit, sfunit, mfunit}
+    and a sorted list of all city names for the dropdown.
+    Falls back to None if the download fails.
+    """
+    ZIP_URL = (
+        "https://resources.gisdata.mn.gov/pub/gdrs/data/pub/us_mn_state_metc/"
+        "econ_residential_building_permts/"
+        "csv_us_mn_state_metc_econ_residential_building_permts.zip"
+    )
+    try:
+        r = requests.get(ZIP_URL, timeout=20)
+        r.raise_for_status()
+        z = zipfile.ZipFile(io.BytesIO(r.content))
+        # Find the CSV inside the zip
+        csv_name = next((n for n in z.namelist() if n.endswith('.csv')), None)
+        if not csv_name:
+            return None, []
+        raw = z.read(csv_name).decode('utf-8', errors='replace')
+        reader = csv.DictReader(io.StringIO(raw))
+        data = {}
+        cities = set()
+        for row in reader:
+            city = (row.get('CTU_NAME') or '').strip()
+            year_raw = (row.get('YEAR') or '').strip()
+            if not city or not year_raw:
+                continue
+            try:
+                year = int(float(year_raw))
+                total = int(float(row.get('TOTALUNIT') or row.get('TOTAL_UNITS') or 0))
+                sf    = int(float(row.get('SFUNIT')    or row.get('SF_UNITS')    or 0))
+                mf    = int(float(row.get('MFUNIT')    or row.get('MF_UNITS')    or 0))
+            except (ValueError, TypeError):
+                continue
+            data[(city, year)] = {'total': total, 'sf': sf, 'mf': mf}
+            cities.add(city)
+        return data, sorted(cities)
+    except Exception as e:
+        return None, []
+
+
+def get_metc_city_series(data, city_name):
+    """
+    Returns sorted list of (year, total, sf, mf) for a given CTU_NAME.
+    Tries exact match first, then case-insensitive.
+    """
+    if not data:
+        return []
+    # Exact match
+    rows = [(y, v['total'], v['sf'], v['mf'])
+            for (c, y), v in data.items() if c == city_name]
+    if not rows:
+        # Case-insensitive
+        city_lower = city_name.lower()
+        rows = [(y, v['total'], v['sf'], v['mf'])
+                for (c, y), v in data.items() if c.lower() == city_lower]
+    return sorted(rows, key=lambda x: x[0])
+
+
+def render_metc_panel(selected_city, data):
+    """
+    Renders the Twin Cities Market Context panel for MN cities.
+    Shows: permit volume trend chart, SF vs MF breakdown, and peer comparison.
+    """
+    if not data:
+        st.info(
+            "📊 Met Council market data unavailable — "
+            "could not reach gisdata.mn.gov. Try again later."
+        )
+        return
+
+    # Map Streamlit city name -> CTU_NAME in Met Council data
+    CITY_MAP = {
+        "Minneapolis, MN": "Minneapolis",
+        "Saint Paul, MN":  "Saint Paul",
+    }
+    ctu = CITY_MAP.get(selected_city, selected_city.replace(", MN", ""))
+
+    series = get_metc_city_series(data, ctu)
+    if not series:
+        st.info(f"📊 No Met Council permit data found for {ctu}.")
+        return
+
+    years  = [r[0] for r in series]
+    totals = [r[1] for r in series]
+    sfs    = [r[2] for r in series]
+    mfs    = [r[3] for r in series]
+
+    # Key stats
+    latest_year = years[-1]
+    latest_total = totals[-1]
+    peak_year  = years[totals.index(max(totals))]
+    peak_total = max(totals)
+    avg_5yr    = int(sum(totals[-5:]) / min(5, len(totals))) if totals else 0
+    latest_sf  = sfs[-1]
+    latest_mf  = mfs[-1]
+
+    st.write("")
+    st.divider()
+    st.subheader("📊 Twin Cities Market Context")
+    st.caption(
+        f"Met Council residential permit data, 7-county metro area, 2009–{latest_year}. "
+        "Source: Metropolitan Council via MN Geospatial Commons."
+    )
+
+    # --- Top metrics row ---
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric(f"{latest_year} Permits", f"{latest_total:,}", help="Total residential units permitted")
+    m2.metric("5-Year Avg", f"{avg_5yr:,}", help="Average annual units permitted, last 5 years")
+    m3.metric("Peak Year", f"{peak_year} ({peak_total:,})", help="Highest single-year permit volume")
+    sf_pct = int(100 * latest_sf / latest_total) if latest_total else 0
+    m4.metric(f"{latest_year} Single-Family", f"{sf_pct}%", help="Share of permits that are single-family")
+
+    # --- Trend chart using st.bar_chart ---
+    st.write("")
+    st.markdown(f"**Annual Residential Permit Volume — {ctu}**")
+
+    import pandas as pd
+    df_trend = pd.DataFrame({
+        "Year": years,
+        "Single-Family": sfs,
+        "Multifamily": mfs,
+    }).set_index("Year")
+    st.bar_chart(df_trend, height=220, use_container_width=True)
+
+    # --- Peer comparison: show the city vs 5 neighbors for latest year ---
+    PEERS = {
+        "Minneapolis": ["Minneapolis", "Saint Paul", "Bloomington", "Brooklyn Park",
+                        "Plymouth", "Maple Grove", "Edina"],
+        "Saint Paul":  ["Saint Paul", "Minneapolis", "Bloomington", "Maplewood",
+                        "Roseville", "Woodbury", "Eagan"],
+    }
+    peer_list = PEERS.get(ctu, [ctu])
+    peer_rows = []
+    for peer in peer_list:
+        peer_series = get_metc_city_series(data, peer)
+        if peer_series:
+            last = peer_series[-1]
+            peer_rows.append({"City": peer, "Year": last[0],
+                               "Total Units": last[1], "SF": last[2], "MF": last[3]})
+
+    if peer_rows:
+        st.write("")
+        st.markdown(f"**Peer Comparison — {latest_year} Permit Volume**")
+        df_peers = pd.DataFrame(peer_rows).sort_values("Total Units", ascending=False)
+        df_peers["SF %"] = df_peers.apply(
+            lambda r: f"{int(100*r['SF']/r['Total Units'])}%" if r['Total Units'] > 0 else "—", axis=1
+        )
+        # Highlight selected city
+        def highlight_city(row):
+            if row["City"] == ctu:
+                return ["background-color: #dbeafe"] * len(row)
+            return [""] * len(row)
+        st.dataframe(
+            df_peers[["City", "Total Units", "SF", "MF", "SF %"]].style.apply(highlight_city, axis=1),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    # 10-year trajectory note
+    if len(totals) >= 10:
+        delta_10yr = totals[-1] - totals[-10]
+        direction  = "▲ up" if delta_10yr > 0 else "▼ down"
+        st.caption(
+            f"{ctu} residential permitting is {direction} {abs(delta_10yr):,} units "
+            f"vs. 10 years ago ({years[-10]}: {totals[-10]:,} → {latest_year}: {latest_total:,})."
+        )
+
+
+
 CITIES = {
     "San Francisco, CA": {
         "rentcast_city": "San Francisco",
@@ -1942,7 +2125,17 @@ with st.sidebar:
     st.caption("Data sources: City open data portals, RentCast API.")
     st.caption("© 2026 VerifiHouse. All rights reserved.")
 
+# Pre-warm Met Council cache in background (silently — no spinner shown)
+# This runs once on cold start so MN city queries are instant thereafter
+if "metc_prewarmed" not in st.session_state:
+    try:
+        get_metc_permit_data()
+    except Exception:
+        pass
+    st.session_state.metc_prewarmed = True
+
 # --- 7. MAIN UI ---
+
 st.markdown("<h1 style='text-align: center;'>VerifiHouse Property Audit</h1>", unsafe_allow_html=True)
 st.caption(
     "⚠️ For informational purposes only. Permit data sourced from public government APIs "
@@ -2079,6 +2272,11 @@ if st.session_state.has_run:
                         st.write(f"- {i}")
                 else:
                     st.success("Claims verified.")
+
+        # Met Council market context — MN cities only
+        if selected_city in ("Minneapolis, MN", "Saint Paul, MN"):
+            metc_data, _ = get_metc_permit_data()
+            render_metc_panel(selected_city, metc_data)
 
         # Raw data expander
         with st.expander("Raw Permit Data"):
