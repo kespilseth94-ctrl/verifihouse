@@ -286,20 +286,6 @@ CITIES = {
         "default_number": "4149",
         "default_street": "Aldrich Ave S",
     },
-    "Saint Paul, MN": {
-        "rentcast_city": "Saint Paul",
-        "rentcast_state": "MN",
-        "default_number": "1080",
-        "default_street": "Montreal Ave",
-        # Note: Saint Paul migrated to PAULIE system (Sept 2025).
-        # The Socrata dataset covers permits from 2013 through mid-2025.
-        # Very recent permits (post-July 2025) may not yet appear here.
-        "data_notice": (
-            "⚠️ Saint Paul's open data API is offline (post-July 2025 security incident). "
-            "PAULIE (new system) completed its data migration April 2026 but has no public API yet. "
-            "RentCast property data and predictive analysis still work. Permit history requires manual lookup."
-        ),
-    },
     "Chicago, IL": {
         "rentcast_city": "Chicago",
         "rentcast_state": "IL",
@@ -317,16 +303,6 @@ CITIES = {
         "rentcast_state": "PA",
         "default_number": "1234",
         "default_street": "Market St",
-    },
-    "Denver, CO": {
-        "rentcast_city": "Denver",
-        "rentcast_state": "CO",
-        "default_number": "1600",
-        "default_street": "Glenarm Pl",
-        "data_notice": (
-            "ℹ️ Denver migrated its permit portal. "
-            "If no permits appear, visit opendata-geospatialdenver.hub.arcgis.com"
-        ),
     },
     "Dallas, TX": {
         "rentcast_city": "Dallas",
@@ -384,36 +360,6 @@ CITIES = {
         # Note: Building permits now called "Building & Development Application"
         # since June 2024 BDA system launch. Plumbing NOT included (Allegheny
         # County Health Dept handles separately).
-    },
-    "Miami, FL": {
-        "rentcast_city": "Miami",
-        "rentcast_state": "FL",
-        "default_number": "1 NW",
-        "default_street": "1st St",
-        # Miami-Dade County ArcGIS open data — last 3 years of permits.
-        # Uses self-healing field discovery on the FeatureServer endpoint.
-        "data_notice": (
-            "ℹ️ Miami-Dade permit data covers unincorporated county. "
-            "City of Miami permits may require separate lookup at miamidade.gov/permits"
-        ),
-    },
-    "Cleveland, OH": {
-        "rentcast_city": "Cleveland",
-        "rentcast_state": "OH",
-        "default_number": "2079",
-        "default_street": "E 9th St",
-    },
-    "Detroit, MI": {
-        "rentcast_city": "Detroit",
-        "rentcast_state": "MI",
-        "default_number": "2900",
-        "default_street": "E Grand Blvd",
-    },
-    "Nashville, TN": {
-        "rentcast_city": "Nashville",
-        "rentcast_state": "TN",
-        "default_number": "500",
-        "default_street": "Deaderick St",
     },
     "Baltimore, MD": {
         "rentcast_city": "Baltimore",
@@ -551,147 +497,6 @@ def get_minneapolis_data(number, street):
         st.warning(f"Minneapolis API error: {e}")
         return []
 
-
-def get_saint_paul_data(number, street):
-    """
-    Saint Paul permit data is currently in transition.
-
-    Timeline:
-    - July 2025: City suffered a digital security incident; old systems (ECLIPS/AMANDA)
-      taken offline. The old Socrata open data portal (j8ip-eytd) went dead.
-    - Sept 17, 2025: PAULIE launched as MVP — new permits only, no historical data yet.
-    - April 1–6, 2026: PAULIE taken offline for legacy data migration (20+ years of records).
-    - April 6, 2026: PAULIE came back online WITH historical data, but as a web portal
-      only — no public API or open data export exists yet.
-
-    Until Saint Paul publishes a new open data API, permit data must be looked up manually
-    at: https://online.stpaul.gov/stpaulportal (PAULIE public portal)
-    """
-    clean_num = str(number).strip()
-    clean_street = str(street).strip().upper()
-
-    st.info(
-        f"**Saint Paul permit data is transitioning to a new system (PAULIE).**\n\n"
-        f"Saint Paul's old open data API was taken offline after a July 2025 security "
-        f"incident. The new PAULIE system just completed a full data migration (April 2026) "
-        f"and now holds 20+ years of permit records — but a public API has not yet been "
-        f"published.\n\n"
-        f"**To look up permits for {clean_num} {clean_street} manually:**\n"
-        f"Visit [Saint Paul PAULIE Portal](https://online.stpaul.gov/stpaulportal) "
-        f"and search by address. The RentCast property data and predictive analysis below "
-        f"are still active based on year built."
-    )
-    return []
-    """
-    Saint Paul: Socrata API (information.stpaul.gov)
-    Dataset: Approved Building Permits (j8ip-eytd), covering 2013 to mid-2025.
-
-    Strategy:
-      1. Fetch one sample record to auto-discover actual field names
-      2. Try multiple address query formats until we get results
-      3. Normalize whatever fields exist into the common schema
-    """
-    clean_num = str(number).strip()
-    clean_street = str(street).strip().upper()
-    url = "https://information.stpaul.gov/resource/j8ip-eytd.json"
-
-    try:
-        # --- Step 1: Discover field names from a sample record ---
-        sample_r = requests.get(url, params={'$limit': 1}, timeout=10)
-        sample = sample_r.json()
-        if not isinstance(sample, list) or len(sample) == 0:
-            st.warning("Saint Paul API returned no sample data.")
-            return []
-
-        sample_record = sample[0]
-        available_fields = list(sample_record.keys())
-
-        # --- Step 2: Find the address field ---
-        # Common names Saint Paul / Socrata datasets use
-        addr_candidates = [
-            'address', 'site_address', 'property_address',
-            'permit_address', 'full_address', 'location_address',
-        ]
-        addr_field = next((f for f in addr_candidates if f in available_fields), None)
-
-        # --- Step 3: Find description / work description field ---
-        desc_candidates = [
-            'work_description', 'description', 'job_description',
-            'permit_description', 'scope_of_work', 'work_type',
-            'comments', 'notes',
-        ]
-        desc_field = next((f for f in desc_candidates if f in available_fields), None)
-
-        # --- Step 4: Find date field ---
-        date_candidates = [
-            'issue_date', 'issued_date', 'permit_date',
-            'permit_creation_date', 'application_date', 'date_issued',
-        ]
-        date_field = next((f for f in date_candidates if f in available_fields), None)
-
-        # --- Step 5: Find status / permit type / permit number fields ---
-        status_field  = next((f for f in ['status', 'permit_status', 'current_status'] if f in available_fields), None)
-        type_field    = next((f for f in ['permit_type', 'type', 'permit_type_description', 'work_class'] if f in available_fields), None)
-        number_field  = next((f for f in ['permit_number', 'permit_no', 'permit_num', 'permit_id', 'id'] if f in available_fields), None)
-
-        # --- Step 6: Try multiple address query formats ---
-        # Saint Paul may store as "591 FAIRVIEW AVE S" or "591 S FAIRVIEW AVE" etc.
-        queries_to_try = []
-        if addr_field:
-            queries_to_try = [
-                {f'$where': f"{addr_field} LIKE '{clean_num} {clean_street}%'"},
-                {f'$where': f"upper({addr_field}) LIKE '{clean_num} {clean_street}%'"},
-                {addr_field: f"{clean_num} {clean_street}"},
-                {f'$where': f"{addr_field} LIKE '{clean_num}%'"},
-            ]
-        else:
-            # No address field found — try generic full-text search
-            queries_to_try = [{'$q': f"{clean_num} {clean_street}"}]
-
-        data = []
-        used_query = None
-        for q in queries_to_try:
-            q['$limit'] = 2000
-            if date_field:
-                q['$order'] = f'{date_field} DESC'
-            try:
-                r = requests.get(url, params=q, timeout=10)
-                result = r.json()
-                if isinstance(result, list) and len(result) > 0:
-                    data = result
-                    used_query = q
-                    break
-            except Exception:
-                continue
-
-        # --- Debug info shown in expander so it doesn't clutter the UI ---
-        with st.expander("🔧 Saint Paul API Debug", expanded=(len(data) == 0)):
-            st.caption(f"Available fields: `{', '.join(available_fields)}`")
-            st.caption(f"Mapped → address:`{addr_field}` desc:`{desc_field}` date:`{date_field}` status:`{status_field}`")
-            st.caption(f"Records found: {len(data)} | Query used: `{used_query}`")
-
-        if not data:
-            return []
-
-        # --- Step 7: Normalize to common schema ---
-        normalized = []
-        for p in data:
-            desc = (p.get(desc_field, '') if desc_field else '') or ''
-            date = (p.get(date_field, '') if date_field else '') or ''
-            normalized.append({
-                'description':          desc,
-                'permit_creation_date': str(date)[:10],
-                'permit_type':          (p.get(type_field, '') if type_field else '') or '',
-                'status':               (p.get(status_field, '') if status_field else '') or '',
-                'permit_number':        str((p.get(number_field, '') if number_field else '') or ''),
-                'address_display':      (p.get(addr_field, '') if addr_field else '') or '',
-                '_raw':                 p,
-            })
-        return normalized
-
-    except Exception as e:
-        st.warning(f"Saint Paul API error: {e}")
-        return []
 
 
 def get_chicago_data(number, street):
@@ -863,99 +668,6 @@ def get_philadelphia_data(number, street):
         st.warning(f"Philadelphia API error: {e}")
         return []
 
-
-def get_denver_data(number, street):
-    """
-    Denver: migrated from Socrata to ArcGIS Hub.
-    Old endpoint (rffu-79qm) redirects — new endpoint TBD.
-    Uses self-healing field discovery. Will show a data notice if the
-    endpoint cannot be found.
-
-    To update: find the current FeatureServer URL at
-    opendata-geospatialdenver.hub.arcgis.com and update DENVER_ENDPOINT below.
-    """
-    # Known candidate ArcGIS endpoints for Denver building permits
-    # Update this when confirmed:
-    DENVER_ENDPOINTS = [
-        "https://services1.arcgis.com/zdB7qR0BtYrg0Xpl/arcgis/rest/services/ODC_PERMIT_P_BC_public/FeatureServer/0/query",
-        "https://services.arcgis.com/zdB7qR0BtYrg0Xpl/arcgis/rest/services/Building_Permits/FeatureServer/0/query",
-    ]
-
-    clean_num = str(number).strip()
-    clean_street = str(street).strip().upper()
-
-    for endpoint in DENVER_ENDPOINTS:
-        try:
-            # Try a sample fetch to test if endpoint is alive
-            test = requests.get(endpoint, params={
-                "where": "1=1", "outFields": "*",
-                "resultRecordCount": 1, "f": "json"
-            }, timeout=8)
-            sample = test.json()
-
-            if "features" not in sample or sample.get("error"):
-                continue
-
-            # Discover field names from sample
-            attrs = sample["features"][0]["attributes"] if sample["features"] else {}
-            fields = list(attrs.keys())
-
-            # Map fields
-            addr_field = next((f for f in fields if "address" in f.lower() or "addr" in f.lower()), None)
-            desc_field = next((f for f in fields if "desc" in f.lower() or "work" in f.lower() or "scope" in f.lower()), None)
-            date_field = next((f for f in fields if "issued" in f.lower() or "issue" in f.lower() or "date" in f.lower()), None)
-            num_field  = next((f for f in fields if "permit" in f.lower() and ("num" in f.lower() or "no" in f.lower() or "id" in f.lower())), None)
-            stat_field = next((f for f in fields if "status" in f.lower()), None)
-            type_field = next((f for f in fields if "type" in f.lower() and "permit" in f.lower()), None)
-
-            if not addr_field:
-                continue
-
-            # Query for the address
-            r2 = requests.get(endpoint, params={
-                "where": f"{addr_field} LIKE '{clean_num} {clean_street}%'",
-                "outFields": "*",
-                "resultRecordCount": 2000,
-                "orderByFields": f"{date_field} DESC" if date_field else "",
-                "f": "json"
-            }, timeout=10)
-            result = r2.json()
-            features = result.get("features", [])
-
-            normalized = []
-            for feat in features:
-                a = feat.get("attributes", {})
-                date_val = a.get(date_field, "") if date_field else ""
-                # Convert Unix ms if needed
-                if isinstance(date_val, (int, float)) and date_val > 1e10:
-                    try:
-                        date_val = datetime.datetime.utcfromtimestamp(
-                            date_val / 1000).strftime("%Y-%m-%d")
-                    except Exception:
-                        date_val = ""
-                normalized.append({
-                    "description":          str(a.get(desc_field, "") or "") if desc_field else "",
-                    "permit_creation_date": str(date_val)[:10],
-                    "permit_type":          str(a.get(type_field, "") or "") if type_field else "",
-                    "status":               str(a.get(stat_field, "") or "") if stat_field else "",
-                    "permit_number":        str(a.get(num_field, "") or "") if num_field else "",
-                    "address_display":      str(a.get(addr_field, "") or "") if addr_field else "",
-                    "_raw":                 a,
-                })
-            return normalized
-
-        except Exception:
-            continue
-
-    # All endpoints failed — show helpful message
-    st.info(
-        "Denver permit data endpoint could not be reached. "
-        "Denver migrated from Socrata to ArcGIS Hub. "
-        "Visit [Denver Open Data](https://opendata-geospatialdenver.hub.arcgis.com) "
-        "to find the current building permits dataset. "
-        "RentCast property data and predictive analysis below are still active."
-    )
-    return []
 
 
 def get_dallas_data(number, street):
@@ -1158,16 +870,12 @@ def fetch_permits(city_name, number, street):
         return get_sf_data(number, street)
     elif city_name == "Minneapolis, MN":
         return get_minneapolis_data(number, street)
-    elif city_name == "Saint Paul, MN":
-        return get_saint_paul_data(number, street)
     elif city_name == "Chicago, IL":
         return get_chicago_data(number, street)
     elif city_name == "Seattle, WA":
         return get_seattle_data(number, street)
     elif city_name == "Philadelphia, PA":
         return get_philadelphia_data(number, street)
-    elif city_name == "Denver, CO":
-        return get_denver_data(number, street)
     elif city_name == "Dallas, TX":
         return get_dallas_data(number, street)
     elif city_name == "Austin, TX":
@@ -1182,14 +890,6 @@ def fetch_permits(city_name, number, street):
         return get_new_orleans_data(number, street)
     elif city_name == "Pittsburgh, PA":
         return get_pittsburgh_data(number, street)
-    elif city_name == "Miami, FL":
-        return get_miami_data(number, street)
-    elif city_name == "Cleveland, OH":
-        return get_cleveland_data(number, street)
-    elif city_name == "Detroit, MI":
-        return get_detroit_data(number, street)
-    elif city_name == "Nashville, TN":
-        return get_nashville_data(number, street)
     elif city_name == "Baltimore, MD":
         return get_baltimore_data(number, street)
     elif city_name == "Milwaukee, WI":
@@ -1442,101 +1142,13 @@ def get_pittsburgh_data(number, street):
         return []
 
 
-def get_miami_data(number, street):
-    """
-    Miami-Dade: ArcGIS Open Data (gis-mdc.opendata.arcgis.com)
-    Building permits for last 3 years, county-wide.
-    Uses self-healing field discovery — ArcGIS FeatureServer query.
-
-    Known fields from metadata:
-      ADDRESS or SITE_ADDR -> property address
-      JOB_DESC or DESCRIPTION -> work description
-      ISSUE_DATE or DATE_ISSUED -> issue date (Unix ms or string)
-      STATUS or PERMIT_STATUS -> current status
-      PROCESS_NUM or PERMIT_NUM -> permit number
-      PERMIT_TYPE -> category
-
-    Note: Covers unincorporated Miami-Dade. City of Miami permits
-    may be in a separate dataset.
-    """
-    clean_num = str(number).strip()
-    clean_street = str(street).strip().upper()
-
-    # Known candidate ArcGIS endpoints for Miami-Dade building permits
-    endpoints = [
-        "https://services1.arcgis.com/CvuPhqcTQpZPT9qY/arcgis/rest/services/Building_Permit/FeatureServer/0/query",
-        "https://gis.miamidade.gov/arcgis/rest/services/Building/BuildingPermits/FeatureServer/0/query",
-        "https://services1.arcgis.com/CvuPhqcTQpZPT9qY/arcgis/rest/services/MDC_BuildingPermit/FeatureServer/0/query",
-    ]
-
-    for endpoint in endpoints:
-        try:
-            # Sample fetch to discover fields and verify endpoint
-            test = requests.get(endpoint, params={
-                "where": "1=1", "outFields": "*",
-                "resultRecordCount": 1, "f": "json"
-            }, timeout=8)
-            sample = test.json()
-            if "features" not in sample or sample.get("error"):
-                continue
-
-            attrs = sample["features"][0]["attributes"] if sample["features"] else {}
-            fields = list(attrs.keys())
-
-            addr_f = next((f for f in fields if any(x in f.upper() for x in ["ADDRESS","ADDR","SITE"])), None)
-            desc_f = next((f for f in fields if any(x in f.upper() for x in ["DESC","WORK","SCOPE","JOB"])), None)
-            date_f = next((f for f in fields if any(x in f.upper() for x in ["ISSUE","DATE","ISSUED"])), None)
-            stat_f = next((f for f in fields if "STATUS" in f.upper()), None)
-            num_f  = next((f for f in fields if any(x in f.upper() for x in ["PROCESS","PERMIT_N","PERMIT_NUM","NUMBER"])), None)
-            type_f = next((f for f in fields if "TYPE" in f.upper() and "PERMIT" in f.upper()), None)
-
-            if not addr_f:
-                continue
-
-            r = requests.get(endpoint, params={
-                "where": f"{addr_f} LIKE '{clean_num}%{clean_street.split()[0]}%'",
-                "outFields": "*", "resultRecordCount": 2000, "f": "json"
-            }, timeout=10)
-            result = r.json()
-            features = result.get("features", [])
-
-            normalized = []
-            for feat in features:
-                a = feat.get("attributes", {})
-                date_val = a.get(date_f, "") if date_f else ""
-                if isinstance(date_val, (int, float)) and date_val > 1e10:
-                    try:
-                        date_val = datetime.datetime.utcfromtimestamp(date_val / 1000).strftime("%Y-%m-%d")
-                    except Exception:
-                        date_val = ""
-                normalized.append({
-                    "description":          str(a.get(desc_f, "") or "") if desc_f else "",
-                    "permit_creation_date": str(date_val)[:10],
-                    "permit_type":          str(a.get(type_f, "") or "") if type_f else "",
-                    "status":               str(a.get(stat_f, "") or "") if stat_f else "",
-                    "permit_number":        str(a.get(num_f, "") or "") if num_f else "",
-                    "address_display":      str(a.get(addr_f, "") or "") if addr_f else "",
-                    "_raw":                 a,
-                })
-            return normalized
-
-        except Exception:
-            continue
-
-    st.info(
-        "Miami-Dade permit data endpoint could not be reached. "
-        "Search permits at [miamidade.gov/permits](https://www.miamidade.gov/permits/). "
-        "RentCast property data and predictive analysis are still active."
-    )
-    return []
-
 
 def _arcgis_self_heal(endpoints, clean_num, clean_street, city_label):
     """
     Generic self-healing ArcGIS FeatureServer fetcher.
     Tries each endpoint, auto-discovers address/desc/date/status fields,
     queries by address, and returns normalized permit list.
-    Used by Cleveland, Detroit, Nashville, Miami.
+    Used by Minneapolis.
     """
     for endpoint in endpoints:
         try:
@@ -1727,68 +1339,6 @@ def get_baltimore_data(number, street):
     return result
 
 
-def get_cleveland_data(number, street):
-    """
-    Cleveland: ArcGIS Hub (data.clevelandohio.gov). Launched April 2024.
-    Dataset: Issued Building Permits — Building and Housing dept.
-    Uses _arcgis_self_heal() for field discovery.
-    """
-    endpoints = [
-        "https://services6.arcgis.com/F5y6NqxUFGVMXmAD/arcgis/rest/services/Issued_Building_Permits/FeatureServer/0/query",
-        "https://services.arcgis.com/F5y6NqxUFGVMXmAD/arcgis/rest/services/Building_Permits/FeatureServer/0/query",
-    ]
-    result = _arcgis_self_heal(endpoints, str(number).strip(),
-                               str(street).strip().upper(), "Cleveland")
-    if not result:
-        st.info("Cleveland permit data endpoint not confirmed. "
-                "Search at [data.clevelandohio.gov](https://data.clevelandohio.gov). "
-                "RentCast data and predictions still active.")
-    return result
-
-
-def get_detroit_data(number, street):
-    """
-    Detroit: ArcGIS Hub (data.detroitmi.gov).
-    Dataset: Building Permits issued by BSEED (Buildings, Safety Engineering
-    & Environmental Department).
-    Uses _arcgis_self_heal() for field discovery.
-    """
-    endpoints = [
-        "https://services2.arcgis.com/qvkbeam8ghSnvbe5/arcgis/rest/services/Building_Permits/FeatureServer/0/query",
-        "https://services6.arcgis.com/PUGEyBT6P6xHBHdV/arcgis/rest/services/Building_Permits/FeatureServer/0/query",
-        "https://services.arcgis.com/PUGEyBT6P6xHBHdV/arcgis/rest/services/Building_Permits/FeatureServer/0/query",
-    ]
-    result = _arcgis_self_heal(endpoints, str(number).strip(),
-                               str(street).strip().upper(), "Detroit")
-    if not result:
-        st.info("Detroit permit data endpoint not confirmed. "
-                "Search at [data.detroitmi.gov](https://data.detroitmi.gov). "
-                "RentCast data and predictions still active.")
-    return result
-
-
-def get_nashville_data(number, street):
-    """
-    Nashville: ArcGIS Hub (datanashvillegov-nashville.hub.arcgis.com).
-    Migrated from Socrata. Two datasets:
-      - Building Permits Issued (3-year rolling)
-      - Building Permit Applications
-    Uses _arcgis_self_heal() for field discovery.
-    """
-    endpoints = [
-        "https://services2.arcgis.com/HdTo6HJqh92wn4D8/arcgis/rest/services/Building_Permits_Issued/FeatureServer/0/query",
-        "https://services2.arcgis.com/HdTo6HJqh92wn4D8/arcgis/rest/services/Building_Permit_Applications/FeatureServer/0/query",
-        "https://services1.arcgis.com/HdTo6HJqh92wn4D8/arcgis/rest/services/Building_Permits_Issued/FeatureServer/0/query",
-        "https://services1.arcgis.com/HdTo6HJqh92wn4D8/arcgis/rest/services/Building_Permits/FeatureServer/0/query",
-    ]
-    result = _arcgis_self_heal(endpoints, str(number).strip(),
-                               str(street).strip().upper(), "Nashville")
-    if not result:
-        st.info("Nashville permit data endpoint not confirmed. "
-                "Search at [datanashvillegov-nashville.hub.arcgis.com]"
-                "(https://datanashvillegov-nashville.hub.arcgis.com). "
-                "RentCast data and predictions still active.")
-    return result
 
 
 def get_rentcast_data(number, street, city, state):
@@ -1845,7 +1395,7 @@ def analyze_history(permits, city_name="", year_built=None):
 
     # --- MN Code Timeline Safety Gap analysis ---
     # Source: public law — MN DLI, revisor.mn.gov (freely reproducible)
-    if city_name in ("Minneapolis, MN", "Saint Paul, MN"):
+    if city_name == "Minneapolis, MN":
         score, log = _run_mn_code_timeline(permits, score, log, year_built)
 
         # Expired permit flag (Minneapolis-specific)
@@ -2140,7 +1690,7 @@ def predict_future(age, permits, city_name=""):
             "why": "No roof permit in last 20 years. Standard asphalt shingle lifespan is 20–25 yrs in MN."})
 
     # MN renovation cascade warning
-    if city_name in ("Minneapolis, MN", "Saint Paul, MN") and age < 2002:
+    if city_name == "Minneapolis, MN" and age < 2002:
         preds.append({"item": "Renovation Permit Cascade Risk", "cost": "$10k–$30k additional",
             "prob": "MEDIUM",
             "why": f"Homes built before 2002 in MN: pulling a permit for a major remodel triggers "
@@ -2181,7 +1731,7 @@ def check_truth(claims, permits):
 with st.sidebar:
     st.title("🛡️ VerifiHouse")
     st.info("System Online 🟢")
-    st.caption("Beta — 20 U.S. Cities")
+    st.caption("Beta — 14 U.S. Cities")
     st.divider()
     st.markdown("**⚠️ Disclaimer**")
     st.markdown(
@@ -2211,7 +1761,7 @@ c1, c2 = st.columns([1, 2])
 with c2:
     selected_city = st.selectbox(
         "City",
-        list(CITIES.keys()),
+        sorted(CITIES.keys()),
         index=list(CITIES.keys()).index(st.session_state.selected_city),
     )
     st.session_state.selected_city = selected_city
@@ -2337,7 +1887,7 @@ if st.session_state.has_run:
                     st.success("Claims verified.")
 
         # Met Council market context — MN cities only
-        if selected_city in ("Minneapolis, MN", "Saint Paul, MN"):
+        if selected_city == "Minneapolis, MN":
             metc_data, _ = get_metc_permit_data()
             render_metc_panel(selected_city, metc_data)
 
