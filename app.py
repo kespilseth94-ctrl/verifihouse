@@ -655,10 +655,6 @@ if 'selected_city' not in st.session_state:
     st.session_state.selected_city = "San Francisco, CA"
 if 'year_built_input' not in st.session_state:
     st.session_state.year_built_input = None
-if 'email_verified' not in st.session_state:
-    st.session_state.email_verified = False
-if 'premium_unlocked' not in st.session_state:
-    st.session_state.premium_unlocked = False
 
 # --- 4. DATA FETCH FUNCTIONS ---
 
@@ -1840,139 +1836,6 @@ def _arcgis_self_heal(endpoints, clean_num, clean_street, city_label):
     return []
 
 
-def get_rentcast_data(number, street, city, state):
-    try:
-        key = st.secrets["rentcast_key"]
-    except Exception:
-        return None
-
-    url = "https://api.rentcast.io/v1/properties"
-    params = {'address': f"{number} {street}, {city}, {state}"}
-    headers = {'X-Api-Key': key}
-
-    try:
-        r = requests.get(url, headers=headers, params=params, timeout=10)
-        data = r.json()
-        if isinstance(data, list) and len(data) > 0:
-            return data[0]
-    except Exception:
-        return None
-    return None
-
-
-
-# =============================================================================
-# EMAIL COLLECTION — GDPR/CAN-SPAM COMPLIANT
-# Storage: Google Sheets via gspread (credentials in st.secrets)
-# Fallback: local CSV log if Sheets not configured (dev mode)
-# Privacy policy: displayed at /privacy via st.query_params routing
-# =============================================================================
-
-def store_email(email, address, city, source="premium_gate"):
-    """
-    Store an email address with metadata.
-    Primary: Google Sheets (gspread) via service account in st.secrets.
-    Fallback: in-memory log (lost on restart — for dev/testing only).
-    Never stores full address — only city + audit timestamp for privacy.
-    GDPR compliant: explicit consent checkbox required before this is called.
-    CAN-SPAM compliant: unsubscribe link in all follow-up emails.
-    """
-    import re
-    # Basic validation
-    if not re.match(r"[^@]+@[^@]+\.[^@]+", email):
-        return False, "Invalid email format."
-
-    timestamp = datetime.datetime.utcnow().isoformat() + "Z"
-    row = [timestamp, email.lower().strip(), city, source]
-
-    # Try Google Sheets first
-    try:
-        import gspread
-        from google.oauth2.service_account import Credentials
-        creds_dict = dict(st.secrets["gcp_service_account"])
-        scopes = [
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive",
-        ]
-        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-        client = gspread.authorize(creds)
-        sheet = client.open(st.secrets.get("sheet_name", "VerifiHouse Emails")).sheet1
-        sheet.append_row(row)
-        return True, "Stored in Sheets."
-    except Exception:
-        pass
-
-    # Fallback: session state log (dev mode — not persistent)
-    if "email_log" not in st.session_state:
-        st.session_state.email_log = []
-    # Deduplicate
-    existing = [r[1] for r in st.session_state.email_log]
-    if email.lower().strip() in existing:
-        return True, "Already registered."
-    st.session_state.email_log.append(row)
-    return True, "Stored in session (dev mode — configure gcp_service_account for persistence)."
-
-
-def render_premium_gate():
-    """
-    Render the email gate for premium features.
-    Returns True if user is already verified or just completed verification.
-    Gated features: RentCast property data, listing truth check, predictive maintenance.
-    """
-    if st.session_state.premium_unlocked:
-        return True
-
-    st.write("")
-    st.divider()
-    st.markdown(
-        "<div style='background:#f0f9ff;padding:20px;border-radius:8px;"
-        "border:1px solid #bae6fd;'>"
-        "<h3 style='margin:0 0 8px 0;color:#0369a1;'>🔓 Unlock Full Report</h3>"
-        "<p style='margin:0 0 12px 0;color:#374151;'>"
-        "Enter your email to access: <strong>predictive maintenance forecasts, "
-        "listing truth check, property age analysis, and market value context.</strong>"
-        "</p>"
-        "<p style='margin:0;font-size:0.8em;color:#6b7280;'>"
-        "Free. No spam. Unsubscribe any time. "
-        "See our <a href='?page=privacy' target='_self'>Privacy Policy</a>."
-        "</p></div>",
-        unsafe_allow_html=True,
-    )
-    st.write("")
-
-    with st.form("premium_gate_form"):
-        email_input = st.text_input(
-            "Email address",
-            placeholder="you@example.com",
-        )
-        consent = st.checkbox(
-            "I agree to receive occasional product updates from VerifiHouse. "
-            "I can unsubscribe at any time.",
-            value=False,
-        )
-        submitted = st.form_submit_button("Unlock Full Report →", type="primary")
-
-        if submitted:
-            if not consent:
-                st.error("Please check the consent box to continue.")
-            elif not email_input or "@" not in email_input:
-                st.error("Please enter a valid email address.")
-            else:
-                city = st.session_state.get("selected_city", "")
-                address = (
-                    f"{st.session_state.get('last_number','')} "
-                    f"{st.session_state.get('last_street','')}"
-                ).strip()
-                ok, msg = store_email(email_input, address, city, source="premium_gate")
-                if ok:
-                    st.session_state.premium_unlocked = True
-                    st.session_state.verified_email = email_input
-                    st.rerun()
-                else:
-                    st.error(f"Could not save email: {msg}")
-    return False
-
-
 def render_privacy_policy():
     """Render the VerifiHouse privacy policy page."""
     st.markdown("""
@@ -2581,7 +2444,6 @@ with c2:
         st.session_state["last_street"] = s_name
         st.session_state["year_built_input"] = year_built_manual
         st.session_state.rc_data = None        # No auto RentCast call
-        st.session_state.premium_unlocked = False  # Reset gate on new search
         with st.spinner("Fetching permit records..."):
             st.session_state.house_permits = fetch_permits(selected_city, s_num, s_name)
             st.session_state.has_run = True
@@ -2660,92 +2522,6 @@ if st.session_state.has_run:
                 f"{n_flags} item{'s' if n_flags != 1 else ''} worth discussing with your inspector or agent. "
                 "These are starting points for investigation, not conclusions."
             )
-
-        # ── PREMIUM GATE ──────────────────────────────────────────────────────
-        premium_ok = render_premium_gate()
-
-        if premium_ok:
-            # Fetch RentCast once after email verification
-            if not rc and "premium_rc_fetched" not in st.session_state:
-                with st.spinner("Fetching property data via RentCast…"):
-                    rc = get_rentcast_data(
-                        st.session_state.get("last_number", ""),
-                        st.session_state.get("last_street", ""),
-                        city_cfg.get("rentcast_city", ""),
-                        city_cfg.get("rentcast_state", ""),
-                    )
-                    st.session_state.rc_data = rc
-                    st.session_state.premium_rc_fetched = True
-                    if rc and rc.get("yearBuilt") and not st.session_state.get("year_built_input"):
-                        year_built = rc.get("yearBuilt")
-
-            # ── Predictive Maintenance ─────────────────────────────────────
-            st.write("")
-            st.subheader("🔮 Predictive Maintenance")
-            st.caption("Premium · Unlocked")
-            preds = predict_future(year_built or 0, permits, city_name=city)
-            if not preds:
-                st.info("No major maintenance items predicted.")
-            else:
-                for pred in preds:
-                    bg = "#fef2f2" if pred["prob"] == "HIGH" else "#fffbeb"
-                    st.markdown(
-                        f"<div style='background:{bg};padding:10px;border-radius:5px;margin-bottom:5px;'>"
-                        f"<strong>{pred['item']}</strong> ({pred['cost']})<br>"
-                        f"<small>{pred['why']}</small></div>",
-                        unsafe_allow_html=True
-                    )
-
-            # ── Property Context (RentCast) ────────────────────────────────
-            if rc:
-                st.write("")
-                st.subheader("🏠 Property Context")
-                st.caption("Premium · Via RentCast")
-                pc1, pc2, pc3, pc4 = st.columns(4)
-                pc1.metric("Year Built",    rc.get("yearBuilt", "N/A"))
-                pc2.metric("Beds / Baths",
-                           f"{rc.get('bedrooms','?')}/{rc.get('bathrooms','?')}")
-                sqft = rc.get("squareFootage")
-                pc3.metric("Sq Ft", f"{sqft:,}" if isinstance(sqft, (int,float)) else "N/A")
-                val_rc = rc.get("price") or rc.get("assessedValue")
-                pc4.metric("Est. Value",
-                           f"${val_rc:,}" if isinstance(val_rc, (int,float)) else "N/A")
-
-            # ── Listing Truth Check ────────────────────────────────────────
-            st.write("")
-            st.subheader("🕵️ Listing Truth Check")
-            st.caption("Premium · Cross-references listing claims against permit history")
-
-            # Auto-load RentCast listing description if available
-            rc_desc = (rc.get("description","") or "") if rc else ""
-            if rc_desc and not st.session_state.get("listing_desc_user",""):
-                st.info("Listing description auto-loaded from RentCast. Edit below if needed.")
-
-            listing_desc = st.text_area(
-                "Listing description (paste from MLS / Zillow):",
-                value=rc_desc,
-                height=130,
-                placeholder="e.g. 'Fully remodeled kitchen (2022), new roof, updated electrical…'",
-                key="listing_desc_input",
-            )
-            if listing_desc and st.button("Check Claims", key="truth_btn"):
-                issues = check_truth(listing_desc, permits)
-                if rc and rc.get("yearBuilt"):
-                    rc_yr = rc["yearBuilt"]
-                    desc_up = listing_desc.upper()
-                    if any(k in desc_up for k in ["ORIGINAL CHARM","ORIGINAL CHARACTER"]) and rc_yr > 1990:
-                        issues.append(
-                            f"Note: 'Original charm' claim on a {rc_yr} build — "
-                            "verify what 'original' refers to."
-                        )
-                if issues:
-                    st.error(f"Found {len(issues)} potential discrepancies:")
-                    for issue in issues:
-                        st.write(f"- {issue}")
-                else:
-                    st.success("✅ No permit discrepancies found for claims in this listing.")
-            elif not listing_desc:
-                st.info("Paste or edit the listing description above, then click Check Claims.")
 
         # NYC Violation Panel
         if selected_city == "New York, NY":
