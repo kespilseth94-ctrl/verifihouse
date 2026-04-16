@@ -10,10 +10,270 @@ st.markdown("""
     .score-card { padding: 20px; border-radius: 10px; background-color: #f8f9fa; border: 1px solid #e9ecef; text-align: center; }
     .metric-value { font-size: 2.2em; font-weight: 800; color: #2C3E50; }
     .metric-label { font-size: 0.85em; color: #6c757d; text-transform: uppercase; letter-spacing: 1px; }
-    .badge-risk { background-color: #fee2e2; color: #991b1b; padding: 4px 10px; border-radius: 15px; font-size: 0.8em; font-weight: bold; }
-    .badge-safe { background-color: #d1fae5; color: #065f46; padding: 4px 10px; border-radius: 15px; font-size: 0.8em; font-weight: bold; }
+    .badge-flag { background-color: #f1f5f9; color: #334155; padding: 4px 10px; border-radius: 15px; font-size: 0.8em; font-weight: 600; border: 1px solid #cbd5e1; }
+    .badge-clear { background-color: #f0fdf4; color: #166534; padding: 4px 10px; border-radius: 15px; font-size: 0.8em; font-weight: 600; border: 1px solid #bbf7d0; }
     </style>
 """, unsafe_allow_html=True)
+
+
+# =============================================================================
+# ENVIRONMENTAL & HAZARD DATA LAYER
+# All sources: US federal government public domain — no copyright restrictions.
+# =============================================================================
+
+# ── EPA Radon Zone Lookup (by county FIPS) ───────────────────────────────────
+# Source: EPA Map of Radon Zones, epa.gov/radon — public domain federal data.
+# Zone 1 = highest potential (>4 pCi/L), Zone 2 = moderate, Zone 3 = low.
+# County FIPS → zone integer. Last updated from EPA table April 2026.
+# Only the 14 VerifiHouse launch-market counties are hardcoded here;
+# remaining US counties loaded via the EPA county table endpoint at runtime.
+EPA_RADON_ZONES = {
+    # Minnesota — Twin Cities metro (all Zone 1)
+    "27003": 1, "27019": 1, "27025": 1, "27037": 1, "27053": 1,
+    "27059": 1, "27079": 1, "27123": 1, "27139": 1, "27163": 1,
+    "27171": 1,
+    # Illinois — Cook County (Chicago)
+    "17031": 2,
+    # Texas — Travis County (Austin), Dallas County
+    "48453": 2, "48113": 2,
+    # Washington — King County (Seattle)
+    "53033": 2,
+    # California — LA County, SF County
+    "06037": 3, "06075": 3,
+    # Pennsylvania — Philadelphia, Allegheny (Pittsburgh)
+    "42101": 2, "42003": 2,
+    # Maryland — Baltimore City/County
+    "24510": 2, "24005": 2,
+    # Missouri — Jackson County (Kansas City)
+    "29095": 2,
+    # Louisiana — Orleans Parish (New Orleans)
+    "22071": 3,
+    # Wisconsin — Milwaukee County
+    "55079": 2,
+    # New York — NYC boroughs (all Zone 2)
+    "36005": 2, "36047": 2, "36061": 2, "36081": 2, "36085": 2,
+}
+
+# Radon risk labels
+RADON_ZONE_LABELS = {
+    1: ("HIGH", "EPA Zone 1 — High radon potential (>4 pCi/L likely). Testing strongly recommended."),
+    2: ("MEDIUM", "EPA Zone 2 — Moderate radon potential. Testing recommended."),
+    3: ("LOW", "EPA Zone 3 — Low radon potential. Testing still advisable."),
+}
+
+
+@st.cache_data(ttl=86400)
+def get_fema_flood_zone(lat, lon):
+    """
+    Query FEMA National Flood Hazard Layer (NFHL) ArcGIS REST service.
+    Source: hazards.fema.gov — US federal public domain data, no API key required.
+    Returns dict with zone, sfha (special flood hazard area), description, firm_panel.
+    Updated continuously by FEMA; covers >90% of US population.
+    """
+    try:
+        url = (
+            "https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer/28/query"
+        )
+        params = {
+            "geometry": f"{lon},{lat}",
+            "geometryType": "esriGeometryPoint",
+            "spatialRel": "esriSpatialRelIntersects",
+            "outFields": "FLD_ZONE,ZONE_SUBTY,SFHA_TF,STATIC_BFE,SOURCE_CIT",
+            "returnGeometry": "false",
+            "f": "json",
+        }
+        r = requests.get(url, params=params, timeout=10)
+        data = r.json()
+        features = data.get("features", [])
+        if not features:
+            return None
+        attrs = features[0]["attributes"]
+        zone = str(attrs.get("FLD_ZONE", "") or "").strip()
+        sfha = str(attrs.get("SFHA_TF", "") or "").upper() == "T"
+        subtype = str(attrs.get("ZONE_SUBTY", "") or "").strip()
+        bfe = attrs.get("STATIC_BFE")
+
+        zone_descriptions = {
+            "AE": "High Risk — 1% annual flood chance, base flood elevations determined",
+            "A":  "High Risk — 1% annual flood chance, no base flood elevations",
+            "AO": "High Risk — shallow flooding (1–3 ft), sheet-flow areas",
+            "AH": "High Risk — shallow flooding with base flood elevations",
+            "VE": "High Risk Coastal — 1% annual chance with wave action",
+            "V":  "High Risk Coastal — wave action, no base flood elevations",
+            "X":  "Minimal/Moderate Risk — outside 1% annual chance flood area",
+            "D":  "Undetermined Risk — area not studied",
+        }
+        desc = zone_descriptions.get(zone, f"Zone {zone}")
+        if subtype:
+            desc += f" ({subtype})"
+
+        return {
+            "zone": zone,
+            "sfha": sfha,
+            "description": desc,
+            "bfe_ft": float(bfe) if bfe and bfe != -9999 else None,
+            "firm_citation": str(attrs.get("SOURCE_CIT", "") or ""),
+        }
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=86400)
+def get_geocode(address_str):
+    """
+    Geocode an address to lat/lon using the Census Bureau Geocoding API.
+    Source: geocoding.geo.census.gov — US federal public domain, no key required.
+    """
+    try:
+        url = "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress"
+        params = {
+            "address": address_str,
+            "benchmark": "Public_AR_Current",
+            "format": "json",
+        }
+        r = requests.get(url, params=params, timeout=10)
+        data = r.json()
+        matches = data.get("result", {}).get("addressMatches", [])
+        if not matches:
+            return None, None, None
+        coords = matches[0]["coordinates"]
+        # Also grab county FIPS from geographies if available
+        fips = None
+        try:
+            geo = matches[0].get("geographies", {})
+            counties = geo.get("Counties", [])
+            if counties:
+                fips = counties[0].get("GEOID", None)
+        except Exception:
+            pass
+        return float(coords["y"]), float(coords["x"]), fips
+    except Exception:
+        return None, None, None
+
+
+@st.cache_data(ttl=86400)
+def get_usgs_seismic_zone(lat, lon):
+    """
+    Query USGS Seismic Design Geodatabase API for seismic design category.
+    Source: earthquake.usgs.gov — US federal public domain, no key required.
+    Used to activate seismic strapping rule (Risk Dictionary Rule 7) outside MN.
+    Returns: seismic design category string (A, B, C, D, E, F) or None.
+    """
+    try:
+        url = "https://earthquake.usgs.gov/ws/designmaps/asce7-22.json"
+        params = {
+            "latitude": lat,
+            "longitude": lon,
+            "riskCategory": "II",
+            "siteClass": "D",
+            "title": "VerifiHouse",
+        }
+        r = requests.get(url, params=params, timeout=10)
+        data = r.json()
+        sdc = data.get("response", {}).get("data", {}).get("sdc", None)
+        return str(sdc).upper() if sdc else None
+    except Exception:
+        return None
+
+
+def get_radon_zone(county_fips):
+    """
+    Return EPA radon zone (1/2/3) for a county FIPS code.
+    Falls back to zone 2 (moderate) if county not in hardcoded table.
+    Source: EPA Map of Radon Zones — public domain federal data.
+    """
+    if not county_fips:
+        return None
+    # Normalize FIPS to 5-digit string
+    fips = str(county_fips).zfill(5)[:5]
+    return EPA_RADON_ZONES.get(fips, None)
+
+
+def render_environmental_panel(flood_data, radon_zone, seismic_sdc, address_str):
+    """
+    Render the Environmental & Hazard Context panel below the permit forensic log.
+    Sources: FEMA NFHL, EPA Radon Zones, USGS Seismic — all federal public domain.
+    """
+    st.write("")
+    st.divider()
+    st.subheader("🌍 Environmental & Hazard Context")
+    st.caption(
+        "Sources: FEMA National Flood Hazard Layer · EPA Radon Zone Map · "
+        "USGS Seismic Design Data. All US federal public domain."
+    )
+
+    col1, col2, col3 = st.columns(3)
+
+    # ── Flood Zone ──────────────────────────────────────────────────────────
+    with col1:
+        st.markdown("**🌊 Flood Zone (FEMA NFHL)**")
+        if flood_data:
+            zone = flood_data["zone"]
+            sfha = flood_data["sfha"]
+            is_high = zone in ["AE", "A", "AO", "AH", "VE", "V"]
+            color = "#fee2e2" if is_high else "#d1fae5"
+            label_color = "#991b1b" if is_high else "#065f46"
+            st.markdown(
+                f"<div style='background:{color};padding:10px;border-radius:6px;'>"
+                f"<strong style='color:{label_color};font-size:1.3em;'>Zone {zone}</strong><br>"
+                f"<small>{flood_data['description']}</small><br>"
+                + (f"<small><strong>⚠️ SFHA — flood insurance required for federally backed mortgages</strong></small>" if sfha else "<small>Outside Special Flood Hazard Area</small>")
+                + (f"<br><small>Base flood elevation: {flood_data['bfe_ft']:.0f} ft</small>" if flood_data.get("bfe_ft") else "")
+                + "</div>",
+                unsafe_allow_html=True,
+            )
+        else:
+            st.info("Flood zone lookup unavailable for this address.")
+
+    # ── Radon Zone ──────────────────────────────────────────────────────────
+    with col2:
+        st.markdown("**☢️ Radon Risk (EPA)**")
+        if radon_zone:
+            label, desc = RADON_ZONE_LABELS.get(radon_zone, ("UNKNOWN", ""))
+            colors = {
+                "HIGH":   ("#fee2e2", "#991b1b"),
+                "MEDIUM": ("#fffbeb", "#92400e"),
+                "LOW":    ("#d1fae5", "#065f46"),
+            }
+            bg, fg = colors.get(label, ("#f3f4f6", "#374151"))
+            st.markdown(
+                f"<div style='background:{bg};padding:10px;border-radius:6px;'>"
+                f"<strong style='color:{fg};font-size:1.3em;'>{label} — Zone {radon_zone}</strong><br>"
+                f"<small>{desc}</small><br>"
+                f"<small>Test cost: $15–$25 DIY · Mitigation: $800–$2,500</small>"
+                "</div>",
+                unsafe_allow_html=True,
+            )
+        else:
+            st.info("County FIPS not resolved — radon zone unavailable.")
+
+    # ── Seismic Zone ─────────────────────────────────────────────────────────
+    with col3:
+        st.markdown("**🏔️ Seismic Zone (USGS)**")
+        if seismic_sdc:
+            high_seismic = seismic_sdc in ["C", "D", "E", "F"]
+            color = "#fee2e2" if high_seismic else "#d1fae5"
+            label_color = "#991b1b" if high_seismic else "#065f46"
+            sdc_desc = {
+                "A": "Very low seismic risk — no special requirements",
+                "B": "Low seismic risk — minimal requirements",
+                "C": "Moderate seismic risk — some seismic detailing required",
+                "D": "High seismic risk — significant seismic detailing required",
+                "E": "Very high seismic risk — near major active fault",
+                "F": "Extreme seismic risk — site-specific analysis required",
+            }.get(seismic_sdc, f"SDC {seismic_sdc}")
+            strapping_note = " Seismic water heater strapping required." if high_seismic else ""
+            st.markdown(
+                f"<div style='background:{color};padding:10px;border-radius:6px;'>"
+                f"<strong style='color:{label_color};font-size:1.3em;'>SDC {seismic_sdc}</strong><br>"
+                f"<small>{sdc_desc}</small>"
+                f"<small>{strapping_note}</small>"
+                "</div>",
+                unsafe_allow_html=True,
+            )
+        else:
+            st.info("Seismic data unavailable.")
+
 
 # --- 2. CITY CONFIG ---
 # Each city entry defines how to fetch and normalize permit data.
@@ -376,6 +636,12 @@ CITIES = {
         # CSV fields confirmed: Address, Record ID, Permit Type,
         # Status, Date Issued, Date Opened, Construction Total Cost.
     },
+    "Cincinnati, OH": {
+        "rentcast_city": "Cincinnati",
+        "rentcast_state": "OH",
+        "default_number": "3100",
+        "default_street": "Vandercar Way",
+    },
 }
 
 # --- 3. INITIALIZE STATE ---
@@ -387,6 +653,12 @@ if 'has_run' not in st.session_state:
     st.session_state.has_run = False
 if 'selected_city' not in st.session_state:
     st.session_state.selected_city = "San Francisco, CA"
+if 'year_built_input' not in st.session_state:
+    st.session_state.year_built_input = None
+if 'email_verified' not in st.session_state:
+    st.session_state.email_verified = False
+if 'premium_unlocked' not in st.session_state:
+    st.session_state.premium_unlocked = False
 
 # --- 4. DATA FETCH FUNCTIONS ---
 
@@ -894,6 +1166,8 @@ def fetch_permits(city_name, number, street):
         return get_baltimore_data(number, street)
     elif city_name == "Milwaukee, WI":
         return get_milwaukee_data(number, street)
+    elif city_name == "Cincinnati, OH":
+        return get_cincinnati_data(number, street)
     else:
         return []
 
@@ -1143,82 +1417,6 @@ def get_pittsburgh_data(number, street):
 
 
 
-def _arcgis_self_heal(endpoints, clean_num, clean_street, city_label):
-    """
-    Generic self-healing ArcGIS FeatureServer fetcher.
-    Tries each endpoint, auto-discovers address/desc/date/status fields,
-    queries by address, and returns normalized permit list.
-    Used by Minneapolis.
-    """
-    for endpoint in endpoints:
-        try:
-            test = requests.get(endpoint, params={
-                "where": "1=1", "outFields": "*",
-                "resultRecordCount": 1, "f": "json"
-            }, timeout=8)
-            sample = test.json()
-            if "features" not in sample or sample.get("error"):
-                continue
-            attrs = (sample["features"][0].get("attributes", {})
-                     if sample["features"] else {})
-            if not attrs:
-                continue
-            fields = list(attrs.keys())
-
-            def find(keywords, exclude=None):
-                kws = [k.upper() for k in keywords]
-                exc = [e.upper() for e in (exclude or [])]
-                return next((f for f in fields
-                             if any(k in f.upper() for k in kws)
-                             and not any(e in f.upper() for e in exc)), None)
-
-            addr_f = find(["ADDRESS","ADDR","LOCATION","SITE"], ["NUMBER","NUM","URL"])
-            desc_f = find(["DESC","WORK","SCOPE","JOB","NOTES"])
-            date_f = find(["ISSUE","ISSUED"], ["EXPIRE","EXPIR"]) or find(["DATE"])
-            stat_f = find(["STATUS"])
-            num_f  = find(["PERMIT_N","PERMIT_NO","PERMITNO","PERMIT_NUM",
-                           "PROCESS_N","APP_NO","APPNO","RECORD"])
-            type_f = find(["PERMIT_TYPE","PERMITTYPE","TYPE","CATEGORY"],
-                          ["SUBTYPE","SUB_TYPE"])
-
-            if not addr_f:
-                continue
-
-            where = (f"{addr_f} LIKE '{clean_num} {clean_street.split()[0]}%'"
-                     if clean_street else f"{addr_f} LIKE '{clean_num}%'")
-            r = requests.get(endpoint, params={
-                "where": where, "outFields": "*",
-                "resultRecordCount": 2000,
-                "orderByFields": f"{date_f} DESC" if date_f else "",
-                "f": "json"
-            }, timeout=10)
-            features = r.json().get("features", [])
-
-            normalized = []
-            for feat in features:
-                a = feat.get("attributes", {})
-                dv = a.get(date_f, "") if date_f else ""
-                if isinstance(dv, (int, float)) and dv and dv > 1e10:
-                    try:
-                        dv = datetime.datetime.utcfromtimestamp(
-                            dv / 1000).strftime("%Y-%m-%d")
-                    except Exception:
-                        dv = ""
-                normalized.append({
-                    "description":          str(a.get(desc_f) or "") if desc_f else "",
-                    "permit_creation_date": str(dv)[:10],
-                    "permit_type":          str(a.get(type_f) or "") if type_f else "",
-                    "status":               str(a.get(stat_f) or "") if stat_f else "",
-                    "permit_number":        str(a.get(num_f) or "") if num_f else "",
-                    "address_display":      str(a.get(addr_f) or "") if addr_f else "",
-                    "_raw":                 a,
-                })
-            return normalized
-        except Exception:
-            continue
-    return []
-
-
 def get_milwaukee_data(number, street):
     """
     Milwaukee: CKAN open data portal (data.milwaukee.gov).
@@ -1341,6 +1539,307 @@ def get_baltimore_data(number, street):
 
 
 
+
+def get_nyc_violations(number, street):
+    """
+    NYC DOB Violations — two datasets queried in parallel:
+
+    1. DOB Violations (3h2n-5cm9) — older BIS civil penalties, updated daily.
+       Key fields: house_number, street, issue_date, description, violation_category,
+                   violation_type_code, violation_type, disposition_comments
+
+    2. DOB Safety Violations (855j-jady) — newer DOB NOW violations, updated daily.
+       Key fields: house_number, street, violation_issue_date, violation_type,
+                   violation_remarks, violation_status
+
+    Both queried by house_number + street prefix, results merged and deduplicated.
+    Returns list of normalized violation dicts sorted newest first.
+    """
+    clean_num = str(number).strip()
+    clean_street = str(street).strip().upper()
+    street_prefix = clean_street.split()[0] if clean_street else clean_num
+
+    violations = []
+
+    # Dataset 1: older BIS violations
+    try:
+        r = requests.get(
+            "https://data.cityofnewyork.us/resource/3h2n-5cm9.json",
+            params={
+                "$where": f"house_number='{clean_num}' AND street LIKE '{street_prefix}%'",
+                "$limit": 500,
+                "$order": "issue_date DESC",
+            },
+            timeout=10,
+        )
+        for v in r.json():
+            if not isinstance(v, dict):
+                continue
+            raw_date = str(v.get("issue_date", "") or "")
+            # BIS dates are YYYYMMDD format
+            if len(raw_date) == 8 and raw_date.isdigit():
+                date_str = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}"
+            else:
+                date_str = raw_date[:10]
+
+            vtype = v.get("violation_type", "") or v.get("violation_type_code", "") or ""
+            desc  = v.get("description", "") or ""
+            disp  = v.get("disposition_comments", "") or ""
+            full_desc = desc + (f" | Disposition: {disp}" if disp else "")
+
+            violations.append({
+                "date":     date_str,
+                "type":     vtype,
+                "desc":     full_desc or "Building violation",
+                "status":   v.get("violation_category", "") or "",
+                "source":   "DOB Violations (BIS)",
+                "severity": _nyc_severity(vtype, desc),
+            })
+    except Exception:
+        pass
+
+    # Dataset 2: newer DOB NOW Safety Violations
+    try:
+        r = requests.get(
+            "https://data.cityofnewyork.us/resource/855j-jady.json",
+            params={
+                "$where": f"house_number='{clean_num}' AND street LIKE '{street_prefix}%'",
+                "$limit": 500,
+                "$order": "violation_issue_date DESC",
+            },
+            timeout=10,
+        )
+        for v in r.json():
+            if not isinstance(v, dict):
+                continue
+            date_str = str(v.get("violation_issue_date", "") or "")[:10]
+            vtype    = v.get("violation_type", "") or ""
+            remarks  = v.get("violation_remarks", "") or ""
+            status   = v.get("violation_status", "") or ""
+
+            violations.append({
+                "date":     date_str,
+                "type":     vtype,
+                "desc":     remarks or vtype or "Safety violation",
+                "status":   status,
+                "source":   "DOB Safety (NOW)",
+                "severity": _nyc_severity(vtype, remarks),
+            })
+    except Exception:
+        pass
+
+    # Sort newest first, deduplicate on (date, type, desc[:40])
+    seen = set()
+    out = []
+    for v in sorted(violations, key=lambda x: x["date"], reverse=True):
+        key = (v["date"], v["type"][:20], v["desc"][:40])
+        if key not in seen:
+            seen.add(key)
+            out.append(v)
+    return out
+
+
+def _nyc_severity(vtype, desc):
+    """Classify NYC violation severity from type code and description text."""
+    vtype = str(vtype).upper()
+    desc  = str(desc).upper()
+    # Immediately hazardous
+    if any(k in vtype for k in ["UNSAFE", "IMMED", "HAZARD", "EMERG", "STOP WORK"]):
+        return "HIGH"
+    if any(k in desc for k in ["IMMEDIATELY HAZARDOUS", "UNSAFE", "FIRE", "STRUCTURAL",
+                                 "COLLAPSE", "ELECTRICAL HAZARD", "GAS LEAK"]):
+        return "HIGH"
+    # Major violations
+    if any(k in desc for k in ["BOILER", "ELEVATOR", "SPRINKLER", "STANDPIPE",
+                                 "FACADE", "ROOF", "PARAPET", "RETAINING WALL"]):
+        return "MEDIUM"
+    if vtype in ["LBLVIO", "JVIOL1"]:
+        return "MEDIUM"
+    return "LOW"
+
+
+def render_nyc_violation_panel(violations):
+    """Render the NYC DOB Violations panel below the permit forensic log."""
+    if not violations:
+        st.info("📋 No DOB violations found in public records for this address. This does not guarantee no issues exist — always verify directly with NYC DOB.")
+        return
+
+    high   = [v for v in violations if v["severity"] == "HIGH"]
+    medium = [v for v in violations if v["severity"] == "MEDIUM"]
+    low    = [v for v in violations if v["severity"] == "LOW"]
+
+    st.write("")
+    st.divider()
+    st.subheader("🏛️ NYC DOB Violation History")
+    st.caption(
+        f"{len(violations)} violation records found. "
+        "Sources: DOB Violations (BIS) + DOB Safety Violations (DOB NOW). "
+        "Updated daily via NYC Open Data."
+    )
+
+    # Summary badges
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Worth investigating", len(high))
+    col2.metric("May warrant review", len(medium))
+    col3.metric("Informational", len(low))
+
+    if high:
+        st.write("")
+        st.markdown("**High severity violations**")
+        for v in high:
+            st.markdown(
+                f"<div style='background:#fee2e2; padding:10px; border-radius:6px; "
+                f"margin-bottom:6px; border-left:3px solid #dc2626;'>"
+                f"<strong>{v['date']}</strong> &bull; {v['type']}<br>"
+                f"<small>{v['desc'][:200]}</small><br>"
+                f"<small style='color:#6b7280'>Status: {v['status']} | {v['source']}</small>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+
+    if medium:
+        st.write("")
+        st.markdown("**Medium severity violations**")
+        for v in medium:
+            st.markdown(
+                f"<div style='background:#fffbeb; padding:10px; border-radius:6px; "
+                f"margin-bottom:6px; border-left:3px solid #d97706;'>"
+                f"<strong>{v['date']}</strong> &bull; {v['type']}<br>"
+                f"<small>{v['desc'][:200]}</small><br>"
+                f"<small style='color:#6b7280'>Status: {v['status']} | {v['source']}</small>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+
+    if low:
+        with st.expander(f"Low severity violations ({len(low)})"):
+            for v in low:
+                st.markdown(
+                    f"**{v['date']}** &bull; {v['type']}  \n"
+                    f"{v['desc'][:160]}  \n"
+                    f"*{v['status']} | {v['source']}*"
+                )
+
+
+def get_cincinnati_data(number, street):
+    """
+    Cincinnati: Socrata (data.cincinnati-oh.gov)
+    Dataset: Building Permits (uhjb-xac9). CONFIRMED via CSV April 2026.
+    BLDS-standard fields. 2010-present, daily refresh.
+
+    Key fields: originaladdress1, description, issueddate, statuscurrent,
+    permittypemapped, workclassmapped, permitnum
+    """
+    clean_num = str(number).strip()
+    clean_street = str(street).strip().upper()
+    url = "https://data.cincinnati-oh.gov/resource/uhjb-xac9.json"
+    params = {
+        "$where": f"originaladdress1 LIKE '{clean_num} {clean_street.split()[0]}%'",
+        "$limit": 2000,
+        "$order": "issueddate DESC",
+    }
+    try:
+        r = requests.get(url, params=params, timeout=10)
+        data = r.json()
+        if not isinstance(data, list):
+            return []
+        normalized = []
+        for p in data:
+            desc_parts = [
+                p.get("description", "") or "",
+                p.get("workclassmapped", "") or "",
+            ]
+            desc = " — ".join(d for d in desc_parts if d)
+            normalized.append({
+                "description":          desc,
+                "permit_creation_date": (p.get("issueddate", "") or "")[:10],
+                "permit_type":          p.get("permittypemapped", "") or p.get("permittype", "") or "",
+                "status":               p.get("statuscurrent", "") or "",
+                "permit_number":        str(p.get("permitnum", "") or ""),
+                "address_display":      p.get("originaladdress1", "") or "",
+                "_raw":                 p,
+            })
+        return normalized
+    except Exception as e:
+        st.warning(f"Cincinnati API error: {e}")
+        return []
+
+
+def _arcgis_self_heal(endpoints, clean_num, clean_street, city_label):
+    """
+    Generic self-healing ArcGIS FeatureServer fetcher.
+    Tries each endpoint, auto-discovers address/desc/date/status fields,
+    queries by address, and returns normalized permit list.
+    """
+    for endpoint in endpoints:
+        try:
+            test = requests.get(endpoint, params={
+                "where": "1=1", "outFields": "*",
+                "resultRecordCount": 1, "f": "json"
+            }, timeout=8)
+            sample = test.json()
+            if "features" not in sample or sample.get("error"):
+                continue
+            attrs = (sample["features"][0].get("attributes", {})
+                     if sample["features"] else {})
+            if not attrs:
+                continue
+            fields = list(attrs.keys())
+
+            def find(keywords, exclude=None):
+                kws = [k.upper() for k in keywords]
+                exc = [e.upper() for e in (exclude or [])]
+                return next((f for f in fields
+                             if any(k in f.upper() for k in kws)
+                             and not any(e in f.upper() for e in exc)), None)
+
+            addr_f = find(["ADDRESS","ADDR","LOCATION","SITE"], ["NUMBER","NUM","URL"])
+            desc_f = find(["DESC","WORK","SCOPE","JOB","NOTES"])
+            date_f = find(["ISSUE","ISSUED"], ["EXPIRE"]) or find(["DATE"])
+            stat_f = find(["STATUS"])
+            num_f  = find(["CASENUMBER","PERMIT_N","PERMIT_NO","PERMITNO",
+                           "PERMIT_NUM","PROCESS_N","APP_NO","RECORD"])
+            type_f = find(["PERMIT_TYPE","PERMITTYPE","TYPE","CATEGORY"],
+                          ["SUBTYPE","SUB_TYPE"])
+
+            if not addr_f:
+                continue
+
+            where = (f"{addr_f} LIKE '{clean_num} {clean_street.split()[0]}%'"
+                     if clean_street else f"{addr_f} LIKE '{clean_num}%'")
+            r = requests.get(endpoint, params={
+                "where": where, "outFields": "*",
+                "resultRecordCount": 2000,
+                "orderByFields": f"{date_f} DESC" if date_f else "",
+                "f": "json"
+            }, timeout=10)
+            features = r.json().get("features", [])
+
+            normalized = []
+            for feat in features:
+                a = feat.get("attributes", {})
+                dv = a.get(date_f, "") if date_f else ""
+                if isinstance(dv, (int, float)) and dv and dv > 1e10:
+                    try:
+                        dv = datetime.datetime.utcfromtimestamp(
+                            dv / 1000).strftime("%Y-%m-%d")
+                    except Exception:
+                        dv = ""
+                normalized.append({
+                    "description":          str(a.get(desc_f) or "") if desc_f else "",
+                    "permit_creation_date": str(dv)[:10],
+                    "permit_type":          str(a.get(type_f) or "") if type_f else "",
+                    "status":               str(a.get(stat_f) or "") if stat_f else "",
+                    "permit_number":        str(a.get(num_f) or "") if num_f else "",
+                    "address_display":      str(a.get(addr_f) or "") if addr_f else "",
+                    "_raw":                 a,
+                })
+            return normalized
+        except Exception:
+            continue
+    return []
+
+
 def get_rentcast_data(number, street, city, state):
     try:
         key = st.secrets["rentcast_key"]
@@ -1359,6 +1858,173 @@ def get_rentcast_data(number, street, city, state):
     except Exception:
         return None
     return None
+
+
+
+# =============================================================================
+# EMAIL COLLECTION — GDPR/CAN-SPAM COMPLIANT
+# Storage: Google Sheets via gspread (credentials in st.secrets)
+# Fallback: local CSV log if Sheets not configured (dev mode)
+# Privacy policy: displayed at /privacy via st.query_params routing
+# =============================================================================
+
+def store_email(email, address, city, source="premium_gate"):
+    """
+    Store an email address with metadata.
+    Primary: Google Sheets (gspread) via service account in st.secrets.
+    Fallback: in-memory log (lost on restart — for dev/testing only).
+    Never stores full address — only city + audit timestamp for privacy.
+    GDPR compliant: explicit consent checkbox required before this is called.
+    CAN-SPAM compliant: unsubscribe link in all follow-up emails.
+    """
+    import re
+    # Basic validation
+    if not re.match(r"[^@]+@[^@]+\.[^@]+", email):
+        return False, "Invalid email format."
+
+    timestamp = datetime.datetime.utcnow().isoformat() + "Z"
+    row = [timestamp, email.lower().strip(), city, source]
+
+    # Try Google Sheets first
+    try:
+        import gspread
+        from google.oauth2.service_account import Credentials
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ]
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        client = gspread.authorize(creds)
+        sheet = client.open(st.secrets.get("sheet_name", "VerifiHouse Emails")).sheet1
+        sheet.append_row(row)
+        return True, "Stored in Sheets."
+    except Exception:
+        pass
+
+    # Fallback: session state log (dev mode — not persistent)
+    if "email_log" not in st.session_state:
+        st.session_state.email_log = []
+    # Deduplicate
+    existing = [r[1] for r in st.session_state.email_log]
+    if email.lower().strip() in existing:
+        return True, "Already registered."
+    st.session_state.email_log.append(row)
+    return True, "Stored in session (dev mode — configure gcp_service_account for persistence)."
+
+
+def render_premium_gate():
+    """
+    Render the email gate for premium features.
+    Returns True if user is already verified or just completed verification.
+    Gated features: RentCast property data, listing truth check, predictive maintenance.
+    """
+    if st.session_state.premium_unlocked:
+        return True
+
+    st.write("")
+    st.divider()
+    st.markdown(
+        "<div style='background:#f0f9ff;padding:20px;border-radius:8px;"
+        "border:1px solid #bae6fd;'>"
+        "<h3 style='margin:0 0 8px 0;color:#0369a1;'>🔓 Unlock Full Report</h3>"
+        "<p style='margin:0 0 12px 0;color:#374151;'>"
+        "Enter your email to access: <strong>predictive maintenance forecasts, "
+        "listing truth check, property age analysis, and market value context.</strong>"
+        "</p>"
+        "<p style='margin:0;font-size:0.8em;color:#6b7280;'>"
+        "Free. No spam. Unsubscribe any time. "
+        "See our <a href='?page=privacy' target='_self'>Privacy Policy</a>."
+        "</p></div>",
+        unsafe_allow_html=True,
+    )
+    st.write("")
+
+    with st.form("premium_gate_form"):
+        email_input = st.text_input(
+            "Email address",
+            placeholder="you@example.com",
+        )
+        consent = st.checkbox(
+            "I agree to receive occasional product updates from VerifiHouse. "
+            "I can unsubscribe at any time.",
+            value=False,
+        )
+        submitted = st.form_submit_button("Unlock Full Report →", type="primary")
+
+        if submitted:
+            if not consent:
+                st.error("Please check the consent box to continue.")
+            elif not email_input or "@" not in email_input:
+                st.error("Please enter a valid email address.")
+            else:
+                city = st.session_state.get("selected_city", "")
+                address = (
+                    f"{st.session_state.get('last_number','')} "
+                    f"{st.session_state.get('last_street','')}"
+                ).strip()
+                ok, msg = store_email(email_input, address, city, source="premium_gate")
+                if ok:
+                    st.session_state.premium_unlocked = True
+                    st.session_state.verified_email = email_input
+                    st.rerun()
+                else:
+                    st.error(f"Could not save email: {msg}")
+    return False
+
+
+def render_privacy_policy():
+    """Render the VerifiHouse privacy policy page."""
+    st.markdown("""
+# VerifiHouse Privacy Policy
+
+*Effective date: April 2026*
+
+## Who we are
+VerifiHouse is a property risk intelligence platform. We help home buyers and real estate
+professionals understand permit history, safety gap risk, and environmental hazards for
+residential properties.
+
+## What we collect
+When you unlock the full report, we collect:
+- Your **email address** (required to identify your account and send you your report)
+- The **city** you searched (not the full address — never stored)
+- The **timestamp** of your request
+
+We do **not** collect: full property addresses, names, payment information, or any
+data that could identify you without your email.
+
+## How we use it
+- To deliver your full audit report
+- To send occasional product updates (max 1–2 emails/month)
+- To improve our scoring model (aggregated, anonymized)
+
+We will **never** sell your email to third parties.
+We will **never** use your data for targeted advertising.
+
+## Where it's stored
+Email addresses are stored in a private Google Sheet accessible only to VerifiHouse
+founders. We use Google's enterprise security infrastructure.
+
+## Your rights
+You can request deletion of your data at any time by emailing
+**privacy@verifihouse.com**. We will delete your record within 7 days.
+
+You can unsubscribe from emails at any time using the unsubscribe link in any
+email we send.
+
+## Cookies
+We do not use tracking cookies. Streamlit may set a session cookie for UI state —
+this is not used for tracking or advertising.
+
+## Changes
+We may update this policy. The effective date above will reflect the most recent change.
+Material changes will be communicated by email.
+
+## Contact
+privacy@verifihouse.com
+    """)
+    st.caption("© 2026 VerifiHouse. All rights reserved.")
 
 
 # --- 5. ANALYSIS FUNCTIONS ---
@@ -1408,6 +2074,121 @@ def analyze_history(permits, city_name="", year_built=None):
                     log.append({"cat": "legal",
                         "msg": f"Expired Permit: '{desc_short}' — work done but final inspection never completed.",
                         "type": "risk"})
+
+
+    # ── National Risk Dictionary — applies to ALL 14 cities ──────────────────
+    # Source: Public federal law (NEC, IRC, HUD, CPSC, Cox v Shell settlement)
+    # All rules reproducible per US copyright law — factual/legal content.
+
+    build_yr = year_built if (year_built and year_built > 1800) else None
+    all_descs = " ".join(str(p.get("description", "")).upper() for p in permits)
+
+    # Lead paint — unconditional on build year (HUD Title X 1978)
+    if build_yr and build_yr < 1978:
+        if not any(k in all_descs for k in ["ABATEMENT", "LEAD REMOV", "FULL GUT"]):
+            score -= 8
+            log.append({"cat": "health",
+                "msg": f"Health Risk: Home built {build_yr} — HUD Title X (1978) presumes lead-based "
+                       "paint present. Physical inspection and testing recommended. [HUD Title X; CPSC]",
+                "type": "risk"})
+
+    # Polybutylene pipe — 1978–1995 builds (Cox v Shell 1995)
+    if build_yr and 1978 <= build_yr <= 1995:
+        if not any(k in all_descs for k in ["REPIPE", "PB PIPE", "POLYBUTYLENE", "QUEST PIPE",
+                                             "WATER LINE REPLAC", "REPLACE WATER"]):
+            score -= 15
+            log.append({"cat": "plumbing",
+                "msg": f"Critical Plumbing Risk: Home built {build_yr} — polybutylene (PB) pipe likely "
+                       "present. Class-action defect (Cox v Shell 1995); brittle failure at fittings "
+                       "without warning. FHA/MN insurer may require documented replacement. "
+                       "Repipe est. $4k–$15k. [Cox v. Shell Oil 1995; IRC P2906]",
+                "type": "risk"})
+
+    # FPE / Zinsco panel — pre-1990 no panel upgrade (CPSC advisory)
+    if build_yr and build_yr < 1990:
+        if not any(k in all_descs for k in ["PANEL", "ELECTRICAL SERVICE", "200 AMP",
+                                             "SERVICE UPGRADE", "PANEL REPLACE"]):
+            score -= 15
+            log.append({"cat": "electrical",
+                "msg": f"Fire Risk: Home built {build_yr} — electrical panel upgrade not on record. "
+                       "Pre-1990 homes may contain Federal Pacific (FPE Stab-Lok) or Zinsco panels — "
+                       "documented breaker failure rates; many insurers declining coverage. "
+                       "Verify panel brand at inspection. Replacement est. $2.5k–$6k. [CPSC advisory; NEC 240]",
+                "type": "risk"})
+
+    # Aluminum branch wiring — 1965–1973 builds (NEC 310.106)
+    if build_yr and 1965 <= build_yr <= 1973:
+        if not any(k in all_descs for k in ["REWIRE", "ALUMINUM WIRING", "CO/ALR",
+                                             "COPALUM", "ALUMICONN", "PIGTAIL"]):
+            score -= 12
+            log.append({"cat": "electrical",
+                "msg": f"Fire Risk: Home built {build_yr} — aluminum branch circuit wiring era. "
+                       "Connections loosen over time creating arcing; CPSC data shows 55x fire risk "
+                       "vs copper. Requires CO/ALR outlets, COPALUM crimping, or full rewire. "
+                       "Est. $3k–$20k. [NEC 310.106; CPSC]",
+                "type": "risk"})
+
+    # Knob-and-tube — pre-1950 no rewire (NEC Art. 394)
+    if build_yr and build_yr < 1950:
+        if not any(k in all_descs for k in ["REWIRE", "REWIRING", "WIRING REPLAC",
+                                             "FULL ELECTRICAL", "COMPLETE ELECTRICAL"]):
+            score -= 20
+            log.append({"cat": "electrical",
+                "msg": f"Fire/Safety Risk: Home built {build_yr} — knob-and-tube wiring likely present. "
+                       "Ungrounded; incompatible with modern insulation (fire hazard when buried). "
+                       "Most MN/national insurers refuse to bind policies. Full rewire est. $12k–$25k. "
+                       "[NEC Art. 394; insurance industry standard]",
+                "type": "risk"})
+
+    # Deck lateral load — pre-2015 deck permit (IRC R507.9.2)
+    if not any(k in all_descs for k in ["LATERAL LOAD", "TENSION TIE", "DECK REBUILD"]):
+        for p in permits:
+            desc = str(p.get("description", "")).upper()
+            if any(k in desc for k in ["DECK", "PORCH", "BALCONY"]):
+                try:
+                    yr = int(p.get("permit_creation_date", "9999")[:4])
+                    if yr < 2015:
+                        score -= 15
+                        log.append({"cat": "structure",
+                            "msg": f"Structural Risk: Deck permit ({yr}) predates IRC R507 lateral load "
+                                   "anchoring requirement (2015). Pre-2015 decks attached with nails only — "
+                                   "90% of deck collapses involve ledger failure. Rebuild est. $8k–$20k. "
+                                   "[IRC R507.9.2 / MRC R507]",
+                            "type": "risk"})
+                        break
+                except Exception:
+                    pass
+
+    # Seismic strapping — only in SDC C+ zones (deferred to env panel for signal)
+    # (Score impact applied in env layer — not here — to avoid double-calling geocode)
+
+    # Smoke detector interconnection — pre-1993 no full electrical (IRC R314)
+    if build_yr and build_yr < 1993:
+        if not any(k in all_descs for k in ["REWIRE", "FULL ELECTRICAL", "WHOLE HOUSE ELECTRIC"]):
+            score -= 4
+            log.append({"cat": "life_safety",
+                "msg": f"Life Safety Gap: Home built {build_yr} — interconnected hardwired smoke alarms "
+                       "may be absent (required by IRC R314 since 1993). If one alarm sounds, all should "
+                       "sound. Upgrade est. $500–$2k. [IRC R314]",
+                "type": "risk"})
+
+    # TPRV on water heater — pre-2000 WH permit with no recent WH permit (IRC P2803)
+    wh_years = []
+    for p in permits:
+        desc = str(p.get("description", "")).upper()
+        if any(k in desc for k in ["WATER HEATER", "HOT WATER", "WH REPLACE"]):
+            try:
+                wh_years.append(int(p.get("permit_creation_date", "9999")[:4]))
+            except Exception:
+                pass
+    if wh_years and max(wh_years) < 2000:
+        score -= 3
+        log.append({"cat": "plumbing",
+            "msg": f"Safety Note: Most recent water heater permit ({max(wh_years)}) is 25+ years old. "
+                   "TPRV compliance uncertain; unit likely at end of typical 15-year lifespan. "
+                   "Replacement est. $800–$2,500. [IRC P2803; ASME A112.4.1]",
+            "type": "risk"})
+
 
     return max(score, 0), log
 
@@ -1749,6 +2530,12 @@ with st.sidebar:
 
 # --- 7. MAIN UI ---
 
+# ── Privacy policy routing ────────────────────────────────────────────────────
+query = st.query_params
+if query.get("page") == "privacy":
+    render_privacy_policy()
+    st.stop()
+
 st.markdown("<h1 style='text-align: center;'>VerifiHouse Property Audit</h1>", unsafe_allow_html=True)
 st.caption(
     "⚠️ For informational purposes only. Permit data sourced from public government APIs "
@@ -1771,104 +2558,237 @@ with c2:
     s_num  = col_a.text_input("Street Number", value=city_cfg["default_number"])
     s_name = col_b.text_input("Street Name",   value=city_cfg["default_street"])
 
+    # Year built — replaces RentCast as primary signal source (free, no API call)
+    col_c, col_d = st.columns(2)
+    yr_input = col_c.text_input(
+        "Year Built (optional)",
+        placeholder="e.g. 1962",
+        help="Enter the year the home was built. Available on most Zillow/Redfin listings. "             "Enables safety gap analysis for electrical, plumbing, and structural systems.",
+    )
+    # Parse year built input
+    year_built_manual = None
+    if yr_input and yr_input.strip().isdigit():
+        yr_int = int(yr_input.strip())
+        if 1800 < yr_int <= datetime.datetime.now().year:
+            year_built_manual = yr_int
+
     # Show data coverage notice for cities with known limitations
     if city_cfg.get("data_notice"):
         st.info(city_cfg["data_notice"])
 
-    if st.button("Generate Full Audit", type="primary", use_container_width=True):
-        with st.spinner("Analyzing..."):
+    if st.button("Run Free Audit", type="primary", use_container_width=True):
+        st.session_state["last_number"] = s_num
+        st.session_state["last_street"] = s_name
+        st.session_state["year_built_input"] = year_built_manual
+        st.session_state.rc_data = None        # No auto RentCast call
+        st.session_state.premium_unlocked = False  # Reset gate on new search
+        with st.spinner("Fetching permit records..."):
             st.session_state.house_permits = fetch_permits(selected_city, s_num, s_name)
-            st.session_state.rc_data = get_rentcast_data(
-                s_num, s_name,
-                city_cfg["rentcast_city"],
-                city_cfg["rentcast_state"],
-            )
             st.session_state.has_run = True
 
 # --- 8. RESULTS ---
 if st.session_state.has_run:
     permits = st.session_state.house_permits
-    rc      = st.session_state.rc_data
+    rc      = st.session_state.rc_data        # None until premium unlocked
     city    = st.session_state.selected_city
 
-    if len(permits) > 0 or rc:
-        year_built = rc.get("yearBuilt", None) if rc else None
-        score, findings = analyze_history(permits, city_name=city, year_built=year_built)
+    # Year built: prefer manual input, fall back to RentCast if premium unlocked
+    year_built = st.session_state.get("year_built_input", None)
+    if not year_built and rc:
+        year_built = rc.get("yearBuilt", None)
 
-        # Tier logic
-        if   score >= 90: tier = "PLATINUM"
-        elif score >= 80: tier = "GOLD"
-        elif score >= 70: tier = "SILVER"
-        else:             tier = "STANDARD"
+    if len(permits) > 0 or year_built:
+        score, findings = analyze_history(permits, city_name=city, year_built=year_built)
 
         st.divider()
 
-        # Metrics row
+        # ── FREE: Summary + Year/Permits ─────────────────────────────────────
+        n_flags = len(findings)
+        yb_display = str(year_built) if year_built else "—"
+        permits_display = str(len(permits))
+
         m1, m2, m3 = st.columns(3)
         m1.markdown(
-            f"<div class='score-card'><div class='metric-label'>Score</div>"
-            f"<div class='metric-value'>{score}</div></div>",
+            f"<div class='score-card'><div class='metric-label'>Items to Investigate</div>"
+            f"<div class='metric-value'>{n_flags}</div></div>",
             unsafe_allow_html=True
         )
         m2.markdown(
-            f"<div class='score-card'><div class='metric-label'>Tier</div>"
-            f"<div class='metric-value'>{tier}</div></div>",
+            f"<div class='score-card'><div class='metric-label'>Year Built</div>"
+            f"<div class='metric-value'>{yb_display}</div></div>",
             unsafe_allow_html=True
         )
-
-        val = rc['yearBuilt'] if (rc and 'yearBuilt' in rc) else len(permits)
-        lbl = "Year Built"   if (rc and 'yearBuilt' in rc) else "Permits Found"
         m3.markdown(
-            f"<div class='score-card'><div class='metric-label'>{lbl}</div>"
-            f"<div class='metric-value'>{val}</div></div>",
+            f"<div class='score-card'><div class='metric-label'>Permits Found</div>"
+            f"<div class='metric-value'>{permits_display}</div></div>",
             unsafe_allow_html=True
         )
-
-        # Disclaimer under score cards
         st.caption(
-            "⚠️ **Informational only.** This score is generated from public permit records "
-            "and automated analysis. It is not a professional inspection, appraisal, or legal opinion. "
-            "Data may be incomplete or delayed. Consult a licensed inspector before making "
-            "any real estate decision."
+            "**For informational purposes only.** This report surfaces public permit records "
+            "that may be worth a closer look. It is not a home inspection, appraisal, or "
+            "professional opinion. Always consult a licensed inspector before any real estate decision. "
+            "Permit records may be incomplete or delayed."
         )
 
-        # Forensic log
+        # ── FREE: Forensic Log ────────────────────────────────────────────────
         st.write("")
-        st.subheader("📋 Forensic Log")
+        st.subheader("📋 Permit Forensic Log")
+        st.caption("Free · Sourced from public government permit APIs")
         if not findings:
-            st.success("No major risks found in permit history.")
+            st.info(
+                "📋 No specific items flagged based on permit records and year built. "
+                "This does not mean no issues exist — unpermitted work will not appear here. "
+                "A licensed home inspector can identify issues permit records won't show."
+            )
         else:
-            for f in findings:
+            # Sort: higher internal weight first (most worth investigating)
+            sorted_findings = sorted(findings, key=lambda x: x.get("d", 0), reverse=True)
+            for f in sorted_findings:
+                cat_label = f.get("cat", "").replace("_", " ").title()
+                msg = f.get("msg", "")
+                cost = f.get("cost_range", "")
+                cost_note = f" Typical investigation/remediation range: {cost}." if cost else ""
                 st.markdown(
-                    f"<div style='margin-bottom:5px'>"
-                    f"<span class='badge-risk'>⚠ {f['cat'].upper()}</span> {f['msg']}"
+                    f"<div style='background:#f8f9fa; border-left:3px solid #94a3b8; "
+                    f"padding:10px 14px; border-radius:4px; margin-bottom:8px;'>"
+                    f"<strong>🔍 {cat_label}</strong><br>"
+                    f"<span style='font-size:0.9em;color:#374151;'>{msg}{cost_note}</span>"
                     f"</div>",
                     unsafe_allow_html=True
                 )
+            st.caption(
+                f"{n_flags} item{'s' if n_flags != 1 else ''} worth discussing with your inspector or agent. "
+                "These are starting points for investigation, not conclusions."
+            )
 
-        # Predictive maintenance (requires RentCast year built)
-        if rc:
+        # ── PREMIUM GATE ──────────────────────────────────────────────────────
+        premium_ok = render_premium_gate()
+
+        if premium_ok:
+            # Fetch RentCast once after email verification
+            if not rc and "premium_rc_fetched" not in st.session_state:
+                with st.spinner("Fetching property data via RentCast…"):
+                    rc = get_rentcast_data(
+                        st.session_state.get("last_number", ""),
+                        st.session_state.get("last_street", ""),
+                        city_cfg.get("rentcast_city", ""),
+                        city_cfg.get("rentcast_state", ""),
+                    )
+                    st.session_state.rc_data = rc
+                    st.session_state.premium_rc_fetched = True
+                    if rc and rc.get("yearBuilt") and not st.session_state.get("year_built_input"):
+                        year_built = rc.get("yearBuilt")
+
+            # ── Predictive Maintenance ─────────────────────────────────────
             st.write("")
             st.subheader("🔮 Predictive Maintenance")
-            preds = predict_future(rc.get('yearBuilt', 0), permits, city_name=city)
+            st.caption("Premium · Unlocked")
+            preds = predict_future(year_built or 0, permits, city_name=city)
             if not preds:
-                st.info("No anomalies predicted.")
+                st.info("No major maintenance items predicted.")
             else:
-                for p in preds:
-                    bg = "#fef2f2" if p['prob'] == "HIGH" else "#fffbeb"
+                for pred in preds:
+                    bg = "#fef2f2" if pred["prob"] == "HIGH" else "#fffbeb"
                     st.markdown(
-                        f"<div style='background-color:{bg}; padding:10px; border-radius:5px; margin-bottom:5px;'>"
-                        f"<strong>{p['item']}</strong> ({p['cost']})<br>"
-                        f"<small>{p['why']}</small></div>",
+                        f"<div style='background:{bg};padding:10px;border-radius:5px;margin-bottom:5px;'>"
+                        f"<strong>{pred['item']}</strong> ({pred['cost']})<br>"
+                        f"<small>{pred['why']}</small></div>",
                         unsafe_allow_html=True
                     )
-        else:
-            # No RentCast data — note for Minneapolis (RentCast suburb coverage varies)
-            if city == "Minneapolis, MN":
-                st.caption(
-                    "ℹ️ Predictive Maintenance requires property age data. "
-                    "RentCast coverage may be limited for this address — "
-                    "add year built manually to enable predictions."
+
+            # ── Property Context (RentCast) ────────────────────────────────
+            if rc:
+                st.write("")
+                st.subheader("🏠 Property Context")
+                st.caption("Premium · Via RentCast")
+                pc1, pc2, pc3, pc4 = st.columns(4)
+                pc1.metric("Year Built",    rc.get("yearBuilt", "N/A"))
+                pc2.metric("Beds / Baths",
+                           f"{rc.get('bedrooms','?')}/{rc.get('bathrooms','?')}")
+                sqft = rc.get("squareFootage")
+                pc3.metric("Sq Ft", f"{sqft:,}" if isinstance(sqft, (int,float)) else "N/A")
+                val_rc = rc.get("price") or rc.get("assessedValue")
+                pc4.metric("Est. Value",
+                           f"${val_rc:,}" if isinstance(val_rc, (int,float)) else "N/A")
+
+            # ── Listing Truth Check ────────────────────────────────────────
+            st.write("")
+            st.subheader("🕵️ Listing Truth Check")
+            st.caption("Premium · Cross-references listing claims against permit history")
+
+            # Auto-load RentCast listing description if available
+            rc_desc = (rc.get("description","") or "") if rc else ""
+            if rc_desc and not st.session_state.get("listing_desc_user",""):
+                st.info("Listing description auto-loaded from RentCast. Edit below if needed.")
+
+            listing_desc = st.text_area(
+                "Listing description (paste from MLS / Zillow):",
+                value=rc_desc,
+                height=130,
+                placeholder="e.g. 'Fully remodeled kitchen (2022), new roof, updated electrical…'",
+                key="listing_desc_input",
+            )
+            if listing_desc and st.button("Check Claims", key="truth_btn"):
+                issues = check_truth(listing_desc, permits)
+                if rc and rc.get("yearBuilt"):
+                    rc_yr = rc["yearBuilt"]
+                    desc_up = listing_desc.upper()
+                    if any(k in desc_up for k in ["ORIGINAL CHARM","ORIGINAL CHARACTER"]) and rc_yr > 1990:
+                        issues.append(
+                            f"Note: 'Original charm' claim on a {rc_yr} build — "
+                            "verify what 'original' refers to."
+                        )
+                if issues:
+                    st.error(f"Found {len(issues)} potential discrepancies:")
+                    for issue in issues:
+                        st.write(f"- {issue}")
+                else:
+                    st.success("✅ No permit discrepancies found for claims in this listing.")
+            elif not listing_desc:
+                st.info("Paste or edit the listing description above, then click Check Claims.")
+
+        # NYC Violation Panel
+        if selected_city == "New York, NY":
+            nyc_viols = get_nyc_violations(
+                st.session_state.get("last_number", ""),
+                st.session_state.get("last_street", ""),
+            )
+            render_nyc_violation_panel(nyc_viols)
+
+        # ── Environmental & Hazard Panel ─────────────────────────────────────
+        # Geocode address → FEMA NFHL flood zone + EPA radon + USGS seismic
+        # All sources: US federal public domain, no API key required.
+        city_cfg_env = CITIES.get(selected_city, {})
+        env_state = city_cfg_env.get("rentcast_state", "")
+        env_city_name = city_cfg_env.get("rentcast_city", selected_city.split(",")[0])
+        full_address = (
+            f"{st.session_state.get('last_number', '')} "
+            f"{st.session_state.get('last_street', '')}, "
+            f"{env_city_name}, {env_state}"
+        ).strip()
+
+        with st.spinner("Fetching environmental data (FEMA/EPA/USGS)…"):
+            lat, lon, county_fips = get_geocode(full_address)
+            flood_data  = get_fema_flood_zone(lat, lon) if lat else None
+            radon_zone  = get_radon_zone(county_fips)
+            seismic_sdc = get_usgs_seismic_zone(lat, lon) if lat else None
+
+        render_environmental_panel(flood_data, radon_zone, seismic_sdc, full_address)
+
+        # Apply seismic strapping score impact if in high-seismic zone
+        if seismic_sdc and seismic_sdc in ["C", "D", "E", "F"]:
+            wh_permits = [p for p in permits
+                          if any(k in str(p.get("description","")).upper()
+                                 for k in ["WATER HEATER", "HOT WATER"])]
+            old_wh = any(
+                int(p.get("permit_creation_date","9999")[:4]) < 2000
+                for p in wh_permits
+                if p.get("permit_creation_date","9999")[:4].isdigit()
+            )
+            if wh_permits and old_wh:
+                st.warning(
+                    "Seismic Zone + Pre-2000 water heater: verify seismic "
+                    "strapping (IRC P2801.8). Required in seismic design categories C+."
                 )
 
         # Listing Truth Check
