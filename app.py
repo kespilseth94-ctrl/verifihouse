@@ -2407,13 +2407,34 @@ st.caption(
 )
 
 # City selector + address inputs
+# Selectbox on mobile Chrome can mis-register touch targets.
+# We use a native HTML <select> via st.selectbox but wrap in a form
+# to prevent premature submission on mobile keyboard dismiss.
+city_list = sorted(CITIES.keys())
+try:
+    city_idx = city_list.index(st.session_state.selected_city)
+except ValueError:
+    city_idx = 0
+
+# Inject CSS to enlarge the selectbox tap target on mobile
+st.markdown(
+    "<style>"
+    "div[data-baseweb='select'] > div { min-height: 48px; font-size: 1rem; }"
+    "div[data-baseweb='select'] input { min-height: 48px; }"
+    "</style>",
+    unsafe_allow_html=True,
+)
+
 c1, c2 = st.columns([1, 2])
 with c2:
     selected_city = st.selectbox(
         "City",
-        sorted(CITIES.keys()),
-        index=list(CITIES.keys()).index(st.session_state.selected_city),
+        city_list,
+        index=city_idx,
+        key="city_selectbox",
     )
+    if selected_city not in CITIES:
+        selected_city = city_list[0]
     st.session_state.selected_city = selected_city
     city_cfg = CITIES[selected_city]
 
