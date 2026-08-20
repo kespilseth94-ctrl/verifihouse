@@ -1,9 +1,11 @@
 import streamlit as st
 import requests
 import datetime
+import csv
+import os
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="VerifiHouse", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="Tarn", page_icon="🛡️", layout="wide")
 
 st.markdown("""
     <style>
@@ -25,7 +27,7 @@ st.markdown("""
 # Source: EPA Map of Radon Zones, epa.gov/radon — public domain federal data.
 # Zone 1 = highest potential (>4 pCi/L), Zone 2 = moderate, Zone 3 = low.
 # County FIPS → zone integer. Last updated from EPA table April 2026.
-# Only the 14 VerifiHouse launch-market counties are hardcoded here;
+# Only the 14 Tarn launch-market counties are hardcoded here;
 # remaining US counties loaded via the EPA county table endpoint at runtime.
 EPA_RADON_ZONES = {
     # Minnesota — Twin Cities metro (all Zone 1)
@@ -166,7 +168,7 @@ def get_usgs_seismic_zone(lat, lon):
             "longitude": lon,
             "riskCategory": "II",
             "siteClass": "D",
-            "title": "VerifiHouse",
+            "title": "Tarn",
         }
         r = requests.get(url, params=params, timeout=10)
         data = r.json()
@@ -546,6 +548,21 @@ CITIES = {
         "default_number": "4149",
         "default_street": "Aldrich Ave S",
     },
+    "Minnetonka, MN": {
+        "rentcast_city": "Minnetonka",
+        "rentcast_state": "MN",
+        "default_number": "16219",
+        "default_street": "Temple Way",
+        # Minnetonka has no public permit API (unlike the other 14 cities).
+        # Coverage is a static extract from the city's own permit report,
+        # bundled at data/minnetonka_permits.csv (2016-05-01 to 2026-05-06,
+        # Building permits with Valuation > 0). Refresh manually as needed.
+        "data_notice": (
+            "ℹ️ Minnetonka has no public permit API. Coverage is a static "
+            "extract from the city's permit system (2016–2026) and may not "
+            "include the most recent 1–2 months."
+        ),
+    },
     "Chicago, IL": {
         "rentcast_city": "Chicago",
         "rentcast_state": "IL",
@@ -765,6 +782,63 @@ def get_minneapolis_data(number, street):
         st.warning(f"Minneapolis API error: {e}")
         return []
 
+
+@st.cache_data
+def _load_minnetonka_permits():
+    """
+    Load the bundled Minnetonka permit dataset.
+
+    Source: City of Minnetonka permit report ("Permits Issued by Sub Type
+    and Work Type", Building permits, Valuation > 0), covering issued dates
+    2016-05-01 through 2026-05-06. Minnetonka does not expose a public
+    permit API like the other 14 cities, so this is a static extract rather
+    than a live feed — bundled at data/minnetonka_permits.csv and re-parsed
+    from the city's own report when refreshed.
+    """
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "minnetonka_permits.csv")
+    try:
+        with open(path, newline='', encoding='utf-8') as f:
+            return list(csv.DictReader(f))
+    except FileNotFoundError:
+        return []
+
+
+def get_minnetonka_data(number, street):
+    """
+    Minnetonka: static local dataset (data/minnetonka_permits.csv).
+    No public API — see _load_minnetonka_permits() for source details.
+    """
+    clean_num = str(number).strip()
+    clean_street = str(street).strip().upper()
+
+    rows = _load_minnetonka_permits()
+    normalized = []
+    for row in rows:
+        addr = (row.get('site_address') or '').strip()
+        parts = addr.split(' ', 1)
+        row_num = parts[0] if parts else ''
+        row_street = parts[1] if len(parts) > 1 else ''
+
+        if row_num != clean_num:
+            continue
+        if clean_street and clean_street not in row_street.upper():
+            continue
+
+        normalized.append({
+            'description':          row.get('description', '') or '',
+            'permit_creation_date': row.get('issued_date', '') or '',
+            'permit_type':          row.get('sub_type', '') or '',
+            'status':               '',   # not present in the source report
+            'permit_number':        row.get('permit_number', '') or '',
+            'work_type':            row.get('work_type', '') or '',
+            'contractor':           row.get('contractor', '') or '',
+            'valuation':            row.get('valuation', '') or '',
+            'address_display':      addr,
+            '_raw':                 row,
+        })
+
+    normalized.sort(key=lambda r: r['permit_creation_date'], reverse=True)
+    return normalized
 
 
 def get_chicago_data(number, street):
@@ -1138,6 +1212,8 @@ def fetch_permits(city_name, number, street):
         return get_sf_data(number, street)
     elif city_name == "Minneapolis, MN":
         return get_minneapolis_data(number, street)
+    elif city_name == "Minnetonka, MN":
+        return get_minnetonka_data(number, street)
     elif city_name == "Chicago, IL":
         return get_chicago_data(number, street)
     elif city_name == "Seattle, WA":
@@ -1837,14 +1913,14 @@ def _arcgis_self_heal(endpoints, clean_num, clean_street, city_label):
 
 
 def render_privacy_policy():
-    """Render the VerifiHouse privacy policy page."""
+    """Render the Tarn privacy policy page."""
     st.markdown("""
-# VerifiHouse Privacy Policy
+# Tarn Privacy Policy
 
 *Effective date: April 2026*
 
 ## Who we are
-VerifiHouse is a property risk intelligence platform. We help home buyers and real estate
+Tarn is a property risk intelligence platform. We help home buyers and real estate
 professionals understand permit history, safety gap risk, and environmental hazards for
 residential properties.
 
@@ -1866,12 +1942,12 @@ We will **never** sell your email to third parties.
 We will **never** use your data for targeted advertising.
 
 ## Where it's stored
-Email addresses are stored in a private Google Sheet accessible only to VerifiHouse
+Email addresses are stored in a private Google Sheet accessible only to Tarn
 founders. We use Google's enterprise security infrastructure.
 
 ## Your rights
 You can request deletion of your data at any time by emailing
-**privacy@verifihouse.com**. We will delete your record within 7 days.
+**privacy@tarnhome.com**. We will delete your record within 7 days.
 
 You can unsubscribe from emails at any time using the unsubscribe link in any
 email we send.
@@ -1885,9 +1961,9 @@ We may update this policy. The effective date above will reflect the most recent
 Material changes will be communicated by email.
 
 ## Contact
-privacy@verifihouse.com
+privacy@tarnhome.com
     """)
-    st.caption("© 2026 VerifiHouse. All rights reserved.")
+    st.caption("© 2026 VerifiHouse LLC. All rights reserved.")
 
 
 # --- 5. ANALYSIS FUNCTIONS ---
@@ -2373,23 +2449,23 @@ def check_truth(claims, permits):
 
 # --- 6. SIDEBAR ---
 with st.sidebar:
-    st.title("🛡️ VerifiHouse")
+    st.title("🛡️ Tarn")
     st.info("System Online 🟢")
     st.caption("Beta — 14 U.S. Cities")
     st.divider()
     st.markdown("**⚠️ Disclaimer**")
     st.markdown(
-        "VerifiHouse is an **informational research tool** only. "
+        "Tarn is an **informational research tool** only. "
         "Permit data is sourced from public government APIs and may be incomplete, "
         "delayed, or contain errors. This tool does **not** constitute a property "
         "inspection, appraisal, or legal advice. Always consult a licensed "
         "inspector, appraiser, or attorney before making real estate decisions. "
-        "VerifiHouse makes no representations about the accuracy or completeness "
+        "Tarn makes no representations about the accuracy or completeness "
         "of the data presented."
     )
     st.divider()
     st.caption("Data sources: City open data portals, RentCast API.")
-    st.caption("© 2026 VerifiHouse. All rights reserved.")
+    st.caption("© 2026 VerifiHouse LLC. All rights reserved.")
 
 # --- 7. MAIN UI ---
 
@@ -2399,7 +2475,13 @@ if query.get("page") == "privacy":
     render_privacy_policy()
     st.stop()
 
-st.markdown("<h1 style='text-align: center;'>VerifiHouse Property Audit</h1>", unsafe_allow_html=True)
+# ── Prefill from marketing site (tarnhome.com search box) ────────────────────
+# tarnhome.com links here as ?city=<CITIES key>&number=<street number>&street=<street name>
+qp_city   = query.get("city", "").strip()
+qp_number = query.get("number", "").strip()
+qp_street = query.get("street", "").strip()
+
+st.markdown("<h1 style='text-align: center;'>Tarn Property Audit</h1>", unsafe_allow_html=True)
 st.caption(
     "⚠️ For informational purposes only. Permit data sourced from public government APIs "
     "and may be incomplete or delayed. Not a substitute for a professional property inspection, "
@@ -2411,6 +2493,8 @@ st.caption(
 # We use a native HTML <select> via st.selectbox but wrap in a form
 # to prevent premature submission on mobile keyboard dismiss.
 city_list = sorted(CITIES.keys())
+if qp_city in CITIES:
+    st.session_state.selected_city = qp_city
 try:
     city_idx = city_list.index(st.session_state.selected_city)
 except ValueError:
@@ -2439,8 +2523,8 @@ with c2:
     city_cfg = CITIES[selected_city]
 
     col_a, col_b = st.columns(2)
-    s_num  = col_a.text_input("Street Number", value=city_cfg["default_number"])
-    s_name = col_b.text_input("Street Name",   value=city_cfg["default_street"])
+    s_num  = col_a.text_input("Street Number", value=qp_number or city_cfg["default_number"])
+    s_name = col_b.text_input("Street Name",   value=qp_street or city_cfg["default_street"])
 
     # Year built — replaces RentCast as primary signal source (free, no API call)
     col_c, col_d = st.columns(2)
@@ -2460,7 +2544,15 @@ with c2:
     if city_cfg.get("data_notice"):
         st.info(city_cfg["data_notice"])
 
-    if st.button("Run Free Audit", type="primary", use_container_width=True):
+    # Auto-run once if we arrived from tarnhome.com with a full address in the URL
+    auto_run = (
+        bool(qp_city and qp_number and qp_street)
+        and not st.session_state.get("auto_run_done", False)
+    )
+
+    if st.button("Run Free Audit", type="primary", use_container_width=True) or auto_run:
+        if auto_run:
+            st.session_state["auto_run_done"] = True
         st.session_state["last_number"] = s_num
         st.session_state["last_street"] = s_name
         st.session_state["year_built_input"] = year_built_manual
